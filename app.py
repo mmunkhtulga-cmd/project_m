@@ -1,290 +1,417 @@
 """
-Mouse Recommender (draft)
+Mouse finder - step-by-step Streamlit app.
 Run:  streamlit run app.py
 
-Inputs : grip style, hand size, budget slider (+ a few filters)
-Scoring: shape fit (0-80) + spec bonus (0-~13) + brand points (-/+)
-Budget : top brands may stretch past the slider, low-tier brands may not.
-
-NOTE: the database has NO price column. Prices are ESTIMATED from brand tier +
-features unless you provide real ones (prices.csv next to this file, or upload
-one in the sidebar). Columns: Name,Price_USD
+Flow: hand size -> grip -> budget -> matches (full ranked list is optional).
+Logic lives in core.py. Real prices: prices.csv / sidebar upload / fetch_prices.py
 """
-from pathlib import Path
+import html
+import io
 
-import numpy as np
-import pandas as pd
 import streamlit as st
 
-HERE = Path(__file__).parent
-DB_PATH = HERE / "mouse_db.csv"
-PRICES_PATH = HERE / "prices.csv"
+import core
+
+st.set_page_config(page_title="Mouse finder", page_icon="🖱️", layout="wide")
+
+INK, ACCENT, MUTED = "#12161C", "#2B59FF", "#5F6B7A"
+
+st.markdown(f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;800&display=swap');
+.stApp h1, .stApp h2, .stApp h3, .stApp [data-testid="stMarkdownContainer"] p,
+.stApp .stButton button, .stApp label {{ font-family: 'Manrope', sans-serif; }}
+.block-container {{ max-width: 1100px; padding-top: 2rem; }}
+footer, #MainMenu {{ visibility: hidden; }}
+div[data-testid="stVerticalBlockBorderWrapper"] {{ border-radius: 14px; background: #fff; }}
+.brandmark {{ font-weight: 800; letter-spacing: -0.01em; color: {INK}; font-size: 1.05rem; }}
+.stepper {{ display: flex; gap: 8px; margin: 10px 0 26px; }}
+.stepper span {{ flex: 1; padding-top: 8px; border-top: 3px solid #D5DBE3; color: {MUTED};
+                 font-size: .85rem; font-weight: 600; }}
+.stepper span.done {{ border-color: {ACCENT}80; color: {INK}; }}
+.stepper span.on {{ border-color: {ACCENT}; color: {INK}; }}
+.q {{ font-size: 2.1rem; font-weight: 800; letter-spacing: -0.02em; line-height: 1.15; margin: 0 0 6px; color: {INK}; }}
+.sub {{ color: {MUTED}; margin: 0 0 18px; max-width: 46ch; }}
+.score {{ font-size: 2.4rem; font-weight: 800; letter-spacing: -0.03em; line-height: 1; color: {INK}; }}
+.score small {{ font-size: .9rem; font-weight: 600; color: {MUTED}; margin-left: 4px; }}
+.name {{ font-size: 1.12rem; font-weight: 800; line-height: 1.25; margin: 6px 0 10px; color: {INK}; }}
+.price {{ font-weight: 700; color: {INK}; margin: 8px 0 12px; }}
+.price small {{ color: {MUTED}; font-weight: 600; }}
+.dim {{ margin: 8px 0 4px; }}
+.dimlab {{ display: flex; justify-content: space-between; font-size: .8rem; color: {MUTED}; font-weight: 600; }}
+.dimlab b {{ color: {INK}; }}
+.track {{ position: relative; height: 8px; border-radius: 4px; background: #E3E8EE; margin-top: 4px; }}
+.track .ideal {{ position: absolute; left: 39%; width: 22%; top: 0; bottom: 0; background: {ACCENT}33; border-radius: 4px; }}
+.track .dot {{ position: absolute; top: -3px; width: 14px; height: 14px; margin-left: -7px; border-radius: 50%;
+               background: {ACCENT}; border: 2px solid #fff; box-shadow: 0 0 0 1px {ACCENT}; }}
+.legend {{ font-size: .78rem; color: {MUTED}; margin-top: 10px; }}
+.reasons {{ margin: 12px 0 0; padding-left: 18px; font-size: .88rem; color: {INK}; }}
+.reasons li {{ margin: 2px 0; }}
+</style>
+""", unsafe_allow_html=True)
+
+S = st.session_state
 
 # ----------------------------------------------------------------------------
-# CONFIG  (edit freely)
+# State: S.P holds every answer. Streamlit drops a widget's value when the widget
+# isn't rendered on a step, so widgets are re-seeded from P (bind) and saved back (keep).
 # ----------------------------------------------------------------------------
-# The DB splits some multi-word brands ("Attack" | "Shark RS3 Ultra"); fix them.
-BRAND_FIX = {
-    "Attack": "Attack Shark", "Dark": "Dark Project", "be": "be quiet!",
-    "Press": "Press Play", "Dream": "Dream Machines", "Turtle": "Turtle Beach",
-    "Endgame": "Endgame Gear", "Cooler": "Cooler Master", "Angry": "Angry Miao",
-}
-
-# Tier -> brands. Anything not listed is "Neutral".
-TIER_BRANDS = {
-    "Top": ["Logitech", "Razer", "Zowie", "Finalmouse", "VAXEE", "Endgame Gear",
-            "SteelSeries", "Pulsar", "LAMZU", "G-Wolves", "Corsair", "ASUS"],
-    "Good": ["ATK", "VGN", "MCHOSE", "Keychron", "Glorious", "HyperX", "Rapoo",
-             "Hator", "Ninjutso", "Waizowl", "WLMOUSE", "Kysona", "Xtrfy"],
-    "Low": ["Attack Shark", "AJAZZ", "RK", "Darmoshark", "EWEADN", "Redragon", "Delux"],
-}
-# Defaults, editable in the sidebar: (budget stretch %, brand points)
-TIER_DEFAULTS = {
-    "Top": (20, 8),      # may be recommended up to 20% over the slider, +8 pts
-    "Good": (10, 5),     # consistent-quality brands: +5 pts, 10% stretch
-    "Neutral": (0, 0),
-    "Low": (0, -6),      # fewer points, no stretch
-}
-
-# Target mouse dimensions as a fraction of hand size, per grip (rule-of-thumb
-# community heuristics, NOT validated science - tune to taste).
-GRIPS = {
-    "Palm":      dict(len_r=0.67, wid_r=0.74, height=41.0),
-    "Claw":      dict(len_r=0.64, wid_r=0.72, height=39.5),
-    "Fingertip": dict(len_r=0.60, wid_r=0.68, height=37.5),
-}
-HUMP_SCORE = {  # how well each hump placement suits each grip (0-1)
-    "Palm":      {"Back - moderate": 1.0, "Center": 0.9, "Back - aggressive": 0.8, "Back - minimal": 0.7},
-    "Claw":      {"Back - aggressive": 1.0, "Back - moderate": 1.0, "Back - minimal": 0.8, "Center": 0.6},
-    "Fingertip": {"Back - minimal": 1.0, "Center": 0.9, "Back - moderate": 0.7, "Back - aggressive": 0.4},
-}
-SHAPE_SCORE = {
-    "Palm":      {"Ergonomic": 1.0, "Hybrid": 0.9, "Symmetrical": 0.85},
-    "Claw":      {"Symmetrical": 1.0, "Hybrid": 0.9, "Ergonomic": 0.7},
-    "Fingertip": {"Symmetrical": 1.0, "Hybrid": 0.8, "Ergonomic": 0.5},
-}
-FLAGSHIP_SENSORS = ("PAW3950", "PAW3955", "PAW3395", "PAW3399", "PAW3398",
-                    "XS-1", "Focus Pro", "MARKSMAN", "HERO 25K")
+if "P" not in S:
+    S.P = dict(
+        grip=None, w_len=18.5, w_wid=8.5, w_budget=70, w_hand="Right", w_conn="Any",
+        w_shape="Any", w_maxw=100, w_wpref="Prefer light", w_recency="Medium",
+        w_dated=False, w_perbrand=2, w_list=False, w_rows=15, prices_bytes=None,
+        **{f"s_{t}": v[0] for t, v in core.TIER_DEFAULTS.items()},
+        **{f"p_{t}": v[1] for t, v in core.TIER_DEFAULTS.items()},
+    )
+    S.step = 1
+P = S.P
 
 
-# ----------------------------------------------------------------------------
-# DATA
-# ----------------------------------------------------------------------------
-def brand_tier(brand: str) -> str:
-    for tier, brands in TIER_BRANDS.items():
-        if brand.lower() in (b.lower() for b in brands):
-            return tier
-    return "Neutral"
+def bind(*keys):
+    for k in keys:
+        if k not in S:
+            S[k] = P[k]
 
 
-def is_flagship(sensor) -> bool:
-    return isinstance(sensor, str) and any(f.lower() in sensor.lower() for f in FLAGSHIP_SENSORS)
+def keep(*keys):
+    for k in keys:
+        if S.get(k) is not None:
+            P[k] = S[k]
 
 
-def estimate_price(row) -> float:
-    """Very rough USD estimate from tier + features. Replace with real prices."""
-    base = {"Top": 50, "Good": 32, "Neutral": 22, "Low": 15}[row["Tier"]]
-    p = base
-    p += 22 if row["Connectivity"] == "Wireless" else 0
-    p += 10 if is_flagship(row["Sensor"]) else 0
-    p += 8 if row["Polling rate (Hz)"] >= 4000 else 0
-    w = row["Weight (grams)"]
-    p += 8 if w <= 50 else (4 if w <= 60 else 0)
-    mat = str(row["Material"]).lower()
-    p += 25 if "magnesium" in mat else (10 if "carbon" in mat else 0)
-    if row["Tier"] == "Top":
-        p *= 1.2
-    return max(10.0, round(p))
+def restore(key):
+    """Segmented controls can be deselected; put the last choice back."""
+    if S.get(key) is None:
+        S[key] = P[key]
+
+
+def go(step):
+    S.step = step
+
+
+def pick_grip(g):
+    P["grip"] = g
+    S.step = 3
+
+
+def set_hand(length, width):
+    S.w_len, S.w_wid = length, width
+
+
+def start_over():
+    S.clear()
 
 
 @st.cache_data
-def load_db() -> pd.DataFrame:
-    df = pd.read_csv(DB_PATH, sep=";")
-    for c in ["Length (mm)", "Width (mm)", "Height (mm)", "Weight (grams)", "Polling rate (Hz)"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    df["Weight (grams)"] = df["Weight (grams)"].fillna(df["Weight (grams)"].median())
-    df["Polling rate (Hz)"] = df["Polling rate (Hz)"].fillna(1000)
-    # drop non-mouse outliers (rings, trackballs, giant devices)
-    df = df[df["Length (mm)"].between(75, 140) & df["Width (mm)"].between(45, 80)].copy()
-    df["Brand"] = df["Brand"].replace(BRAND_FIX)
-    df["Tier"] = df["Brand"].map(brand_tier)
-    df["Price"] = df.apply(estimate_price, axis=1)
-    df["Price source"] = "estimate"
-    return df.reset_index(drop=True)
+def base_db():
+    return core.load_db()
 
 
-def read_prices(src) -> pd.DataFrame | None:
-    try:
-        p = pd.read_csv(src, sep=None, engine="python")
-        p.columns = [c.strip() for c in p.columns]
-        return p[["Name", "Price_USD"]].dropna()
-    except Exception:
-        return None
+def tier_config():
+    return {t: (P[f"s_{t}"], P[f"p_{t}"]) for t in core.TIER_DEFAULTS}
 
 
-def apply_price_overrides(df: pd.DataFrame, prices: pd.DataFrame | None) -> pd.DataFrame:
-    if prices is None or prices.empty:
-        return df
-    df = df.copy()
-    m = dict(zip(prices["Name"].str.lower().str.strip(), prices["Price_USD"]))
-    key = df["Name"].str.lower()
-    hit = key.isin(m)
-    df.loc[hit, "Price"] = key[hit].map(m).astype(float)
-    df.loc[hit, "Price source"] = "your csv"
-    return df
+def get_db():
+    prices = core.read_prices(io.BytesIO(P["prices_bytes"])) if P["prices_bytes"] else None
+    if prices is None and core.PRICES_PATH.exists():
+        prices = core.read_prices(core.PRICES_PATH)
+    return core.apply_prices(base_db(), prices)
 
 
-# ----------------------------------------------------------------------------
-# SCORING
-# ----------------------------------------------------------------------------
-def gauss(delta, sigma):
-    return np.exp(-0.5 * (delta / sigma) ** 2)
+def eligible_pool(db):
+    hands = {"Right": ["Right", "Ambidextrous"], "Left": ["Left", "Ambidextrous"]}[P["w_hand"]]
+    pool = db[db["Hand compatibility"].isin(hands) & (db["Weight (grams)"] <= P["w_maxw"])]
+    if P["w_conn"] != "Any":
+        pool = pool[pool["Connectivity"] == P["w_conn"]]
+    if P["w_shape"] != "Any":
+        pool = pool[pool["Shape"].isin([P["w_shape"], "Hybrid"])]
+    return pool
 
 
-def score(df, grip, hand_len, hand_wid, tier_cfg, weight_pref):
-    g = GRIPS[grip]
-    out = df.copy()
-    out["s_len"] = gauss(out["Length (mm)"] - hand_len * g["len_r"], 5.0)
-    out["s_wid"] = gauss(out["Width (mm)"] - hand_wid * g["wid_r"], 3.0)
-    out["s_hgt"] = gauss(out["Height (mm)"] - g["height"], 3.0)
-    out["s_hump"] = out["Hump placement"].map(HUMP_SCORE[grip]).fillna(0.6)
-    out["s_shape"] = out["Shape"].map(SHAPE_SCORE[grip]).fillna(0.85)
-    fit = (0.38 * out["s_len"] + 0.18 * out["s_wid"] + 0.12 * out["s_hgt"]
-           + 0.20 * out["s_hump"] + 0.12 * out["s_shape"])
-    out["Fit"] = 80 * fit
-
-    flagship = out["Sensor"].map(is_flagship)
-    spec = 5 * flagship + 3 * (out["Polling rate (Hz)"] >= 4000)
-    wmax = {"Don't care": 0, "Prefer light": 4, "Ultralight": 7}[weight_pref]
-    spec = spec + wmax * ((80 - out["Weight (grams)"]) / 40).clip(0, 1)
-    out["Specs"] = spec
-
-    out["Brand pts"] = out["Tier"].map(lambda t: tier_cfg[t][1])
-    out["Score"] = (out["Fit"] + out["Specs"] + out["Brand pts"]).clip(0, 100)
-    out["Budget cap"] = None
-    return out
-
-
-def recommend(df, budget, tier_cfg, max_per_brand, n):
-    caps = df["Tier"].map(lambda t: budget * (1 + tier_cfg[t][0] / 100))
-    df = df.assign(**{"Budget cap": caps.round(0)})
-    df = df[df["Price"] <= df["Budget cap"]].sort_values("Score", ascending=False)
-    df = df.groupby("Brand", sort=False).head(max_per_brand)
-    return df.sort_values("Score", ascending=False).head(n).reset_index(drop=True)
+def run_recommend(n=25, per_brand=None):
+    pool = eligible_pool(get_db())
+    sc = core.score(pool, P["grip"], P["w_len"] * 10, P["w_wid"] * 10, tier_config(),
+                    P["w_wpref"], P["w_recency"])
+    recs = core.recommend(sc, P["w_budget"], tier_config(), P["w_dated"],
+                          per_brand or P["w_perbrand"], n)
+    return sc, recs
 
 
 # ----------------------------------------------------------------------------
-# UI
+# Shared UI pieces
 # ----------------------------------------------------------------------------
-def main():
-    st.set_page_config(page_title="Mouse Recommender", page_icon="🖱️", layout="wide")
-    st.title("🖱️ Mouse Recommender")
-    st.caption("Pick your grip, hand size and budget. Brand reputation nudges the ranking.")
+HAND_SVG = f"""
+<svg viewBox="0 0 250 270" width="100%" style="max-width:270px" xmlns="http://www.w3.org/2000/svg"
+     role="img" aria-label="Measure length from the wrist crease to the middle fingertip, and width across the knuckles">
+ <g fill="#E4E9EF" stroke="{INK}" stroke-width="1.6" stroke-linejoin="round">
+  <rect x="64" y="52" width="21" height="86" rx="10.5"/>
+  <rect x="87" y="30" width="21" height="108" rx="10.5"/>
+  <rect x="110" y="46" width="21" height="92" rx="10.5"/>
+  <rect x="133" y="74" width="21" height="64" rx="10.5"/>
+  <rect x="20" y="150" width="24" height="76" rx="12" transform="rotate(-30 32 188)"/>
+  <rect x="64" y="118" width="96" height="106" rx="24"/>
+ </g>
+ <line x1="46" y1="224" x2="178" y2="224" stroke="{INK}" stroke-width="1.6" stroke-dasharray="4 4"/>
+ <g stroke="{ACCENT}" stroke-width="2.2" fill="none" stroke-linecap="round">
+  <line x1="204" y1="30" x2="204" y2="224"/><line x1="197" y1="30" x2="211" y2="30"/><line x1="197" y1="224" x2="211" y2="224"/>
+  <line x1="108" y1="30" x2="197" y2="30" stroke-width="1" stroke-dasharray="3 4"/>
+  <line x1="64" y1="104" x2="160" y2="104"/><line x1="64" y1="97" x2="64" y2="111"/><line x1="160" y1="97" x2="160" y2="111"/>
+ </g>
+ <g fill="{ACCENT}" font-family="Manrope, sans-serif" font-size="12" font-weight="700">
+  <text x="224" y="132" transform="rotate(90 224 132)" text-anchor="middle">Length</text>
+  <text x="112" y="92" text-anchor="middle">Width</text>
+  <text x="112" y="244" text-anchor="middle" fill="{MUTED}" font-weight="600">wrist crease</text>
+ </g>
+</svg>
+"""
 
-    db = load_db()
 
+def header(step):
+    labels = ["Hand", "Grip", "Budget"]
+    cls = ["done" if i + 1 < step else ("on" if i + 1 == step else "") for i in range(3)]
+    steps = "".join(f'<span class="{c}">{i + 1}. {l}</span>' for i, (l, c) in enumerate(zip(labels, cls)))
+    st.markdown('<div class="brandmark">Mouse finder</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="stepper">{steps}</div>', unsafe_allow_html=True)
+
+
+def question(title, sub):
+    st.markdown(f'<p class="q">{title}</p><p class="sub">{sub}</p>', unsafe_allow_html=True)
+
+
+def dim_bar(label, actual, target, span):
+    lo, hi = target - span, target + span
+    pos = min(max((actual - lo) / (hi - lo), 0), 1) * 100
+    return (f'<div class="dim"><div class="dimlab"><span>{label}</span><b>{actual:.0f} mm</b></div>'
+            f'<div class="track"><i class="ideal"></i><i class="dot" style="left:{pos:.0f}%"></i></div></div>')
+
+
+# ----------------------------------------------------------------------------
+# Step 1: hand
+# ----------------------------------------------------------------------------
+def step_hand():
+    header(1)
+    left, right = st.columns([3, 2], gap="large")
+    with left:
+        question("How big is your hand?",
+                 "Mouse size depends on your hand more than anything else. Measure once and we'll do the rest.")
+        bind("w_len", "w_wid")
+        a, b = st.columns(2)
+        a.number_input("Length (cm)", 13.0, 25.0, step=0.1, key="w_len",
+                       help="Wrist crease to the tip of your middle finger, hand flat.")
+        b.number_input("Width (cm)", 6.0, 12.5, step=0.1, key="w_wid",
+                       help="Across the knuckles, thumb excluded.")
+        keep("w_len", "w_wid")
+        st.caption("Don't have a ruler? Pick the closest size.")
+        cols = st.columns(3)
+        for col, (name, (ln, wd)) in zip(cols, core.HAND_PRESETS.items()):
+            col.button(f"{name} · {ln:g} × {wd:g}", key=f"hp_{name}", on_click=set_hand, args=(ln, wd),
+                       width="stretch")
+        st.write("")
+        st.button("Continue", type="primary", on_click=go, args=(2,))
+    with right:
+        st.markdown(HAND_SVG, unsafe_allow_html=True)
+
+
+# ----------------------------------------------------------------------------
+# Step 2: grip
+# ----------------------------------------------------------------------------
+def step_grip():
+    header(2)
+    question("How do you hold your mouse?",
+             "Most people use one of three grips. Pick the one that feels closest to yours.")
+    cols = st.columns(3, gap="medium")
+    for col, (name, g) in zip(cols, core.GRIPS.items()):
+        t = core.targets(name, P["w_len"] * 10, P["w_wid"] * 10)
+        with col, st.container(border=True):
+            st.markdown(f"### {name}")
+            st.write(g["blurb"])
+            st.caption(f"{g['best']} For your hand, aim for about {t['length']:.0f} mm long.")
+            selected = P["grip"] == name
+            st.button("Selected" if selected else f"Use {name.lower()} grip", key=f"grip_{name}",
+                      type="primary" if selected else "secondary", on_click=pick_grip, args=(name,),
+                      width="stretch")
+    with st.expander("Not sure which grip you use?"):
+        st.write("Rest your hand on a mouse the way you do when you play. If your whole palm is on it, "
+                 "that's palm. If your palm touches only the back and your fingers arch, that's claw. "
+                 "If your palm hovers and just your fingertips touch, that's fingertip.")
+    st.write("")
+    st.button("Back", on_click=go, args=(1,))
+
+
+# ----------------------------------------------------------------------------
+# Step 3: budget
+# ----------------------------------------------------------------------------
+def step_budget():
+    header(3)
+    left, right = st.columns([3, 2], gap="large")
+    with left:
+        question("What's your budget?", "We only show mice that fit your hand and your price range.")
+        bind("w_budget", "w_hand", "w_conn", "w_wpref")
+        st.slider("Budget (USD)", 15, 250, step=5, key="w_budget")
+        caps = core.budget_caps(S.w_budget, tier_config())
+        st.caption(f"Top brands can go up to ${caps['Top']}, trusted brands up to ${caps['Good']}. "
+                   f"Everything else stays within ${caps['Neutral']}.")
+        st.segmented_control("Hand", ["Right", "Left"], key="w_hand", width="stretch", on_change=restore, args=("w_hand",))
+        st.segmented_control("Connection", ["Any", "Wireless", "Wired"], key="w_conn", width="stretch", on_change=restore, args=("w_conn",))
+        st.segmented_control("Weight", list(core.WEIGHT_POINTS), key="w_wpref", width="stretch", on_change=restore, args=("w_wpref",))
+        keep("w_budget", "w_hand", "w_conn", "w_wpref")
+        c1, c2, _ = st.columns([1, 2, 3])
+        c1.button("Back", on_click=go, args=(2,))
+        c2.button("Show my mice", type="primary", on_click=go, args=("results",))
+    with right:
+        with st.container(border=True):
+            _, recs = run_recommend(n=999, per_brand=999)
+            st.markdown(f'<div class="score">{len(recs)}</div>', unsafe_allow_html=True)
+            st.write(f"current mice fit your {P['grip'].lower()} grip and a ${P['w_budget']} budget.")
+            st.caption("Older sensors and poor fits are already filtered out.")
+
+
+# ----------------------------------------------------------------------------
+# Results
+# ----------------------------------------------------------------------------
+def sidebar_refine():
     with st.sidebar:
-        st.header("You")
-        grip = st.radio("Grip style", list(GRIPS), index=1, horizontal=True,
-                        help="Palm: whole palm rests on the mouse. Claw: palm on the back, "
-                             "fingers arched. Fingertip: only fingertips touch, palm floats.")
-        c1, c2 = st.columns(2)
-        hand_len = c1.number_input("Hand length (cm)", 14.0, 24.0, 18.5, 0.1,
-                                   help="Wrist crease to middle fingertip") * 10
-        hand_wid = c2.number_input("Hand width (cm)", 6.5, 12.0, 8.5, 0.1,
-                                   help="Across the knuckles, thumb excluded") * 10
+        st.markdown("### Refine")
+        bind("w_budget", "w_maxw", "w_recency", "w_dated", "w_perbrand", "w_shape",
+             "w_hand", "w_conn", "w_wpref")
+        st.slider("Budget (USD)", 15, 250, step=5, key="w_budget")
+        st.segmented_control("Hand", ["Right", "Left"], key="w_hand", width="stretch", on_change=restore, args=("w_hand",))
+        st.segmented_control("Connection", ["Any", "Wireless", "Wired"], key="w_conn", width="stretch", on_change=restore, args=("w_conn",))
+        st.segmented_control("Shape", ["Any", "Symmetrical", "Ergonomic"], key="w_shape", width="stretch", on_change=restore, args=("w_shape",))
+        st.slider("Max weight (g)", 30, 120, step=5, key="w_maxw")
+        st.selectbox("Weight preference", list(core.WEIGHT_POINTS), key="w_wpref")
+        st.selectbox("Favor newer tech", list(core.RECENCY_POINTS), key="w_recency",
+                     help="How many points a current sensor and polling rate are worth.")
+        st.toggle("Include dated mice", key="w_dated",
+                  help="Mice with 2016-2019 era sensors. Hidden by default.")
+        st.slider("Max results per brand", 1, 5, key="w_perbrand")
+        keep("w_budget", "w_hand", "w_conn", "w_shape", "w_maxw", "w_wpref", "w_recency",
+             "w_dated", "w_perbrand")
 
-        st.header("Budget")
-        budget = st.slider("Budget (USD)", 15, 200, 70, 5)
-
-        st.header("Filters")
-        hand = st.selectbox("Handedness", ["Right", "Left"])
-        conn = st.selectbox("Connectivity", ["Any", "Wireless", "Wired"])
-        shape_f = st.selectbox("Shape", ["Any", "Symmetrical", "Ergonomic"])
-        max_w = st.slider("Max weight (g)", 30, 120, 90, 5)
-        weight_pref = st.selectbox("Weight preference", ["Don't care", "Prefer light", "Ultralight"], index=1)
-        max_per_brand = st.slider("Max results per brand", 1, 5, 2)
-        n_results = st.slider("Results to show", 5, 30, 10)
-
-        with st.expander("Brand tiers (stretch % / points)"):
-            tier_cfg = {}
-            for t, (s0, p0) in TIER_DEFAULTS.items():
+        with st.expander("Brand tiers"):
+            tier_keys = [f"s_{t}" for t in core.TIER_DEFAULTS] + [f"p_{t}" for t in core.TIER_DEFAULTS]
+            bind(*tier_keys)
+            for t in core.TIER_DEFAULTS:
                 a, b = st.columns(2)
-                s = a.number_input(f"{t}: stretch %", 0, 50, s0, 5, key=f"s_{t}")
-                p = b.number_input(f"{t}: points", -20, 20, p0, 1, key=f"p_{t}")
-                tier_cfg[t] = (s, p)
-            st.caption("Stretch = how far past the slider a tier's mice may be recommended.")
+                a.number_input(f"{t} stretch %", 0, 50, step=5, key=f"s_{t}")
+                b.number_input(f"{t} points", -20, 20, step=1, key=f"p_{t}")
+            st.caption("Stretch lets a tier be recommended slightly above your budget.")
+            keep(*tier_keys)
 
-        with st.expander("Real prices (recommended)"):
-            st.caption("The database has no prices, so they are estimated. Upload a CSV "
-                       "with columns `Name,Price_USD` (e.g. `ATK F1 V2 Ultra Max,95`).")
-            up = st.file_uploader("prices.csv", type="csv")
+        with st.expander("Real prices"):
+            st.caption("Upload a CSV with `Name,Price_USD`, or run `fetch_prices.py` to build one.")
+            up = st.file_uploader("prices.csv", type="csv", label_visibility="collapsed")
+            if up is not None:
+                P["prices_bytes"] = up.getvalue()
+            if P["prices_bytes"]:
+                st.success("Using your price file.")
 
-    prices = read_prices(up) if up else (read_prices(PRICES_PATH) if PRICES_PATH.exists() else None)
-    db = apply_price_overrides(db, prices)
 
-    # hard filters
-    pool = db[db["Hand compatibility"].isin([hand, "Ambidextrous"])]
-    pool = pool[pool["Weight (grams)"] <= max_w]
-    if conn != "Any":
-        pool = pool[pool["Connectivity"] == conn]
-    if shape_f != "Any":
-        pool = pool[pool["Shape"].isin([shape_f, "Hybrid"])]
+def result_card(rank, r, budget):
+    t = core.targets(P["grip"], P["w_len"] * 10, P["w_wid"] * 10)
+    stretch = r["Price"] > budget
+    verified = r["Price source"] == "verified"
+    badges = [f":blue-badge[{core.TIER_LABEL[r['Tier']]}]",
+              f":green-badge[{r['Era']} tech]" if r["Era"] == "Current" else f":gray-badge[{r['Era']} tech]"]
+    if stretch:
+        badges.append(":orange-badge[Above budget]")
+    with st.container(border=True):
+        st.markdown(":primary-badge[Best match]" if rank == 1 else f":gray-badge[#{rank}]")
+        st.markdown(f'<div class="name">{html.escape(r["Name"])}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="score">{r["Score"]:.0f}<small>/100 match</small></div>', unsafe_allow_html=True)
+        price = (f'${r["Price"]:.0f} <small>verified</small>' if verified
+                 else f'about ${r["Price"]:.0f} <small>estimate</small>')
+        st.markdown(f'<div class="price">{price}</div>', unsafe_allow_html=True)
+        st.markdown(" ".join(badges))
+        st.markdown(dim_bar("Length", r["Length (mm)"], t["length"], 14)
+                    + dim_bar("Width", r["Width (mm)"], t["width"], 8)
+                    + dim_bar("Height", r["Height (mm)"], t["height"], 6), unsafe_allow_html=True)
+        items = "".join(f"<li>{html.escape(x)}</li>" for x in core.reasons(
+            r, P["grip"], P["w_len"] * 10, P["w_wid"] * 10, tier_config()))
+        st.markdown(f'<ul class="reasons">{items}</ul>', unsafe_allow_html=True)
+        st.caption(f"{r['Weight (grams)']:.0f} g · {r['Shape'].lower()} · {r['Connectivity'].lower()}")
 
-    scored = score(pool, grip, hand_len, hand_wid, tier_cfg, weight_pref)
-    recs = recommend(scored, budget, tier_cfg, max_per_brand, n_results)
 
+def step_results():
+    sidebar_refine()
+    st.markdown('<div class="brandmark">Mouse finder</div>', unsafe_allow_html=True)
+    top = st.columns([4, 1, 1, 1, 1], vertical_alignment="center")
+    top[0].markdown(
+        f'<p class="q" style="font-size:1.8rem;margin:14px 0 0">Your matches</p>'
+        f'<p class="sub" style="margin:4px 0 0">{P["grip"]} grip · hand {P["w_len"]:.1f} × {P["w_wid"]:.1f} cm · '
+        f'${P["w_budget"]} budget</p>', unsafe_allow_html=True)
+    top[1].button("Hand", on_click=go, args=(1,), width="stretch")
+    top[2].button("Grip", on_click=go, args=(2,), width="stretch")
+    top[3].button("Budget", on_click=go, args=(3,), width="stretch")
+    top[4].button("Start over", on_click=start_over, width="stretch")
+    st.write("")
+
+    scored, recs = run_recommend(n=40)
     if recs.empty:
-        st.warning("Nothing matches. Raise the budget or loosen the filters.")
+        cf = core.cheapest_fit(scored, P["w_dated"])
+        msg = ("Nothing fits that hand, grip and budget. Try raising the budget or loosening "
+               "the filters in the sidebar.")
+        if cf is not None:
+            msg += f" The cheapest current mouse that fits is {cf['Name']}, at about ${cf['Price']:.0f}."
+        st.warning(msg)
         return
 
-    est_share = (recs["Price source"] == "estimate").mean()
-    if est_share:
-        st.info("Prices shown are **estimates** (no price data in the database). "
-                "Upload real prices in the sidebar for accurate budget filtering.")
+    if (recs.head(3)["Price source"] == "estimate").any():
+        st.info("Some prices are estimates because the database has no price data. "
+                "Upload real prices in the sidebar, or run fetch_prices.py, for an accurate budget filter.")
 
-    st.subheader("Top picks")
-    cols = st.columns(3)
-    for col, (_, r) in zip(cols, recs.head(3).iterrows()):
-        with col, st.container(border=True):
-            st.markdown(f"**{r['Name']}**")
-            st.metric("Score", f"{r['Score']:.0f}/100")
-            over = r["Price"] > budget
-            st.write(f"💲 {r['Price']:.0f} USD" + (" · ⬆️ stretch pick" if over else "")
-                     + f" ({'est.' if r['Price source'] == 'estimate' else 'your csv'})")
-            st.caption(f"{r['Tier']} brand · {r['Length (mm)']:.0f}×{r['Width (mm)']:.0f}×"
-                       f"{r['Height (mm)']:.0f} mm · {r['Weight (grams)']:.0f} g")
-            st.caption(f"{r['Shape']} · hump: {r['Hump placement']} · {r['Connectivity']}")
-            st.caption(f"Fit {r['Fit']:.0f} + specs {r['Specs']:.0f} + brand {r['Brand pts']:+.0f}")
+    cols = st.columns(3, gap="medium")
+    for i, (col, (_, r)) in enumerate(zip(cols, recs.head(3).iterrows()), start=1):
+        with col:
+            result_card(i, r, P["w_budget"])
+    st.markdown('<div class="legend">On each size bar, the shaded band is the ideal range for your hand '
+                'and the dot is where this mouse sits.</div>', unsafe_allow_html=True)
 
-    st.subheader("All results")
-    table = recs[["Name", "Tier", "Score", "Fit", "Specs", "Brand pts", "Price", "Price source",
-                  "Length (mm)", "Width (mm)", "Height (mm)", "Weight (grams)", "Shape",
-                  "Hump placement", "Sensor", "Polling rate (Hz)", "Connectivity"]].copy()
-    table.index = table.index + 1
-    st.dataframe(
-        table, width="stretch",
-        column_config={
-            "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%.0f"),
-            "Fit": st.column_config.NumberColumn(format="%.0f"),
-            "Specs": st.column_config.NumberColumn(format="%.0f"),
+    st.write("")
+    bind("w_list")
+    st.toggle("Show full ranked list", key="w_list")
+    keep("w_list")
+    if S.w_list:
+        bind("w_rows")
+        st.slider("Rows", 5, 40, key="w_rows")
+        keep("w_rows")
+        table = recs.head(S.w_rows)[
+            ["Name", "Tier", "Score", "Era", "Price", "Price source", "Length (mm)", "Width (mm)",
+             "Height (mm)", "Weight (grams)", "Shape", "Hump placement", "Sensor",
+             "Polling rate (Hz)", "Connectivity"]].copy()
+        table["Tier"] = table["Tier"].map(core.TIER_LABEL)
+        table.index = table.index + 1
+        st.dataframe(table, width="stretch", column_config={
+            "Score": st.column_config.ProgressColumn("Match", min_value=0, max_value=100, format="%.0f"),
             "Price": st.column_config.NumberColumn("Price (USD)", format="$%.0f"),
-        },
-    )
+            "Tier": "Brand tier",
+        })
+        st.download_button("Download as CSV", table.to_csv().encode(), "mouse_matches.csv", "text/csv")
 
-    with st.expander("How scoring works"):
-        g = GRIPS[grip]
+    with st.expander("How the match score works"):
+        t = core.targets(P["grip"], P["w_len"] * 10, P["w_wid"] * 10)
+        cfg = tier_config()
         st.markdown(
-            f"- **Fit (0–80):** length, width, height, hump placement and shape vs. your "
-            f"{grip.lower()} grip. Target for you ≈ {hand_len * g['len_r']:.0f} mm long, "
-            f"{hand_wid * g['wid_r']:.0f} mm wide, {g['height']:.0f} mm tall.\n"
-            f"- **Specs (~0–15):** flagship sensor, 4k/8k polling, weight preference.\n"
-            f"- **Brand points:** " + ", ".join(f"{t} {c[1]:+d}" for t, c in tier_cfg.items()) + ".\n"
-            f"- **Budget:** a mouse is eligible if its price ≤ slider × (1 + tier stretch): "
-            + ", ".join(f"{t} ≤ ${budget * (1 + c[0] / 100):.0f}" for t, c in tier_cfg.items()) + ".\n"
-            "- Size ratios and hump/shape preferences are rule-of-thumb heuristics; tune them at the top of `app.py`."
-        )
+            f"- **Fit (up to 70):** length, width, height, hump position and shape against your "
+            f"{P['grip'].lower()} grip. Your target is about {t['length']:.0f} mm long and {t['width']:.0f} mm wide.\n"
+            f"- **Newer tech (up to {core.RECENCY_POINTS[P['w_recency']]}):** sensor generation and polling rate. "
+            f"The database has no release dates, so age is inferred from the tech. Dated mice are hidden unless you include them.\n"
+            f"- **Weight (up to {core.WEIGHT_POINTS[P['w_wpref']]}):** lighter mice score higher if you prefer that.\n"
+            f"- **Brand points:** " + ", ".join(f"{k} {v[1]:+d}" for k, v in cfg.items()) + ".\n"
+            f"- **Budget:** a mouse is shown if its price is at most your budget plus its tier's stretch "
+            f"({', '.join(f'{k} ${v}' for k, v in core.budget_caps(P['w_budget'], cfg).items())}).")
 
 
-if __name__ == "__main__":
-    main()
+# ----------------------------------------------------------------------------
+# Router
+# ----------------------------------------------------------------------------
+if S.step == "results" and not P["grip"]:
+    S.step = 2
+
+if S.step in (1, 2, 3):
+    _, mid, _ = st.columns([1, 6, 1])
+    with mid:
+        {1: step_hand, 2: step_grip, 3: step_budget}[S.step]()
+else:
+    step_results()
