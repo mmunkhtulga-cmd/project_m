@@ -2,11 +2,13 @@
 Core logic for the mouse recommender (no Streamlit imports, so it can be
 tested and reused by fetch_prices.py).
 
-Score (0-100) = fit (0-70) + modernity (0-20/30) + weight bonus (0-7) + brand points
+Raw score = fit (0-70) + newer tech (0-10/20/30) + weight bonus (0-7) + brand points + editor's choice
+Displayed score = raw as a % of the best possible total
 Eligibility   = price <= budget * (1 + tier stretch)  and  era is not "Dated"
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import numpy as np
@@ -26,15 +28,45 @@ BRAND_FIX = {
     "Endgame": "Endgame Gear", "Cooler": "Cooler Master", "Angry": "Angry Miao",
 }
 TIER_BRANDS = {
-    "Top": ["Logitech", "Razer", "Zowie", "Finalmouse", "VAXEE", "Endgame Gear",
-            "SteelSeries", "Pulsar", "LAMZU", "G-Wolves", "Corsair", "ASUS"],
-    "Good": ["ATK", "VGN", "MCHOSE", "Keychron", "Glorious", "HyperX", "Rapoo",
-             "Hator", "Ninjutso", "Waizowl", "WLMOUSE", "Kysona", "Xtrfy"],
-    "Low": ["Attack Shark", "AJAZZ", "RK", "Darmoshark", "EWEADN", "Redragon", "Delux"],
+    "Top": ["Razer", "Logitech", "LAMZU", "Hitscan", "CRDRAKO", "Pulsar", "Endgame Gear",
+            "Arbiter", "MelGeek", "Ninjutso", "Teevolution", "VAXEE"],
+    "Mid": ["ATK", "MCHOSE", "VGN", "VXE", "Finalmouse", "WALLHACK", "Keychron", "HyperX",
+            "UNIUS", "Scyrox", "IPI", "WLMOUSE", "Waizowl", "G-Wolves",
+            # other name brands
+            "SteelSeries", "Glorious", "ROCCAT", "Cooler Master", "Alienware", "MSI",
+            "Turtle Beach", "Xtrfy", "Cherry", "Fnatic"],
+    "Low-mid": ["Attack Shark", "AULA", "Corsair", "AJAZZ", "RK", "Darmoshark", "EWEADN",
+                "Redragon", "Delux"],
 }
+# Model-level exceptions, checked first (first match wins): (regex on full name, tier, connectivity or None)
+NAME_RULES = [
+    (r"akitsu", "Mid", None),                                              # Arbiter's Akitsu is mid tier
+    (r"^ASUS ROG (Keris II|Harpe II|Harpe Ace (Extreme|Mini))", "Top", None),  # only recent ROG
+    (r"^ASUS", "Mid", None),
+    (r"^RAWM (ER21|Leviathan V4)", "Top", None),                           # only recent RAWM
+    (r"^RAWM", "Other", None),
+    (r"^Zowie", "Top", "Wireless"),                                        # Zowie wireless takes priority
+    (r"^Zowie", "Mid", None),
+    (r"^Corsair Sabre", "Mid", None),                                      # Sabre lineup is mid tier
+]
+# Editor's choice mice (exact names as they appear in the database). They get bonus points
+# and are never hidden as "Dated". Add new names here as the database grows.
+EDITORS_PICKS = [
+    "Hitscan Hyperlight",
+    "Logitech G Pro X Superlight", "Logitech G Pro X Superlight 2", "Logitech G Pro X2 Superstrike",
+    "Razer DeathAdder V3 HyperSpeed", "Razer DeathAdder V3",
+    "Razer Viper V3 Pro", "Razer Viper V4 Pro",
+    "Endgame Gear OP1 8k", "Endgame Gear OP1 8k v2", "Endgame Gear XM2 8k", "Endgame Gear XM2 8k v2",
+    "Endgame Gear OP1w 4k", "Endgame Gear OP1w 4k v2", "Endgame Gear XM2w 4k", "Endgame Gear XM2w 4k v2",
+    "LAMZU MAYA X", "LAMZU MAYA", "LAMZU MAYA 4K",
+    "ATK F1 V2 Extreme", "ATK F1 V2 Ultimate", "ATK F1 V2 Ultra Max", "ATK F1 V3",
+    "ATK A9 Air", "ATK A9 Air+", "ATK Phantom",
+    "RAWM Leviathan V4", "MelGeek Horus",
+]
+EDITOR_POINTS = 10
 # tier -> (budget stretch %, brand points)
-TIER_DEFAULTS = {"Top": (20, 8), "Good": (10, 5), "Neutral": (0, 0), "Low": (0, -6)}
-TIER_LABEL = {"Top": "Top brand", "Good": "Trusted brand", "Neutral": "Other brand", "Low": "Budget brand"}
+TIER_DEFAULTS = {"Top": (20, 8), "Mid": (10, 5), "Other": (0, 0), "Low-mid": (0, -4)}
+TIER_LABEL = {"Top": "Top", "Mid": "Mid / enthusiast", "Other": "Other", "Low-mid": "Low to mid"}
 
 # ----------------------------------------------------------------------------
 # GRIPS & HANDS
@@ -116,16 +148,19 @@ def era_label(m: float) -> str:
 # ----------------------------------------------------------------------------
 # DATA
 # ----------------------------------------------------------------------------
-def brand_tier(brand: str) -> str:
+def classify(brand: str, name: str, connectivity: str) -> str:
+    for pattern, tier, conn in NAME_RULES:
+        if re.search(pattern, name, flags=re.I) and (conn is None or conn == connectivity):
+            return tier
     for tier, brands in TIER_BRANDS.items():
         if brand.lower() in (b.lower() for b in brands):
             return tier
-    return "Neutral"
+    return "Other"
 
 
 def estimate_price(row) -> float:
     """Rough USD guess from tier + tech. Only a placeholder until real prices exist."""
-    p = {"Top": 45, "Good": 28, "Neutral": 20, "Low": 14}[row["Tier"]]
+    p = {"Top": 45, "Mid": 30, "Other": 20, "Low-mid": 14}[row["Tier"]]
     p += 22 if row["Connectivity"] == "Wireless" else 0
     p += 28 * row["Modernity"]
     w = row["Weight (grams)"]
@@ -147,7 +182,9 @@ def load_db() -> pd.DataFrame:
     # drop non-mouse outliers (rings, trackballs, oversized devices)
     df = df[df["Length (mm)"].between(75, 140) & df["Width (mm)"].between(45, 80)].copy()
     df["Brand"] = df["Brand"].replace(BRAND_FIX)
-    df["Tier"] = df["Brand"].map(brand_tier)
+    df["Tier"] = [classify(b, n, c) for b, n, c in zip(df["Brand"], df["Name"], df["Connectivity"])]
+    picks = {n.lower() for n in EDITORS_PICKS}
+    df["Editor"] = df["Name"].str.lower().isin(picks)
     df["Modernity"] = (0.7 * df.apply(lambda r: sensor_score(r["Sensor"], r["Tracking speed (IPS)"]), axis=1)
                        + 0.3 * df["Polling rate (Hz)"].map(polling_score))
     df["Era"] = df["Modernity"].map(era_label)
@@ -189,7 +226,8 @@ RECENCY_POINTS = {"Low": 10, "Medium": 20, "High": 30}
 WEIGHT_POINTS = {"Don't mind": 0, "Prefer light": 4, "Ultralight": 7}
 
 
-def score(df, grip, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Prefer light", recency="Medium"):
+def score(df, grip, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Prefer light", recency="Medium",
+          editor_pts=EDITOR_POINTS):
     t = targets(grip, hand_len_mm, hand_wid_mm)
     out = df.copy()
     s_len = _gauss(out["Length (mm)"] - t["length"], 5.0)
@@ -202,8 +240,13 @@ def score(df, grip, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Prefer ligh
     out["Recency"] = RECENCY_POINTS[recency] * out["Modernity"]
     out["Weight bonus"] = WEIGHT_POINTS[weight_pref] * ((80 - out["Weight (grams)"]) / 40).clip(0, 1)
     out["Brand pts"] = out["Tier"].map(lambda k: tier_cfg[k][1])
-    out["Raw"] = out["Fit"] + out["Recency"] + out["Weight bonus"] + out["Brand pts"]
-    out["Score"] = out["Raw"].clip(0, 100)   # display score; "Raw" keeps ties ordered
+    out["Editor pts"] = np.where(out["Editor"], editor_pts, 0)
+    out["Raw"] = out["Fit"] + out["Recency"] + out["Weight bonus"] + out["Brand pts"] + out["Editor pts"]
+    # Display score: share of the best possible total under the current settings, so a
+    # perfect-fit editor's choice from a top brand reads 100 and the rest stay distinguishable.
+    best = (70 + RECENCY_POINTS[recency] + WEIGHT_POINTS[weight_pref]
+            + max(v[1] for v in tier_cfg.values()) + editor_pts)
+    out["Score"] = (out["Raw"] / best * 100).clip(0, 100)
     return out
 
 
@@ -219,7 +262,7 @@ def recommend(scored, budget, tier_cfg, include_dated=False, max_per_brand=2, n=
     out = scored.assign(**{"Budget cap": caps})
     out = out[(out["Price"] <= out["Budget cap"]) & (out["Fit"] >= MIN_FIT)]
     if not include_dated:
-        out = out[out["Era"] != "Dated"]
+        out = out[(out["Era"] != "Dated") | out["Editor"]]
     out = out.sort_values("Raw", ascending=False)
     out = out.groupby("Brand", sort=False).head(max_per_brand)
     return out.sort_values("Raw", ascending=False).head(n).reset_index(drop=True)
@@ -229,13 +272,15 @@ def cheapest_fit(scored, include_dated=False):
     """Cheapest mouse that fits the hand (used to explain an empty result)."""
     pool = scored[scored["Fit"] >= MIN_FIT]
     if not include_dated:
-        pool = pool[pool["Era"] != "Dated"]
+        pool = pool[(pool["Era"] != "Dated") | pool["Editor"]]
     return None if pool.empty else pool.sort_values("Price").iloc[0]
 
 
 def reasons(row, grip, hand_len_mm, hand_wid_mm, tier_cfg) -> list[str]:
     t = targets(grip, hand_len_mm, hand_wid_mm)
     out = []
+    if row["Editor"]:
+        out.append("Editor's choice")
     dl = row["Length (mm)"] - t["length"]
     if abs(dl) <= 4:
         out.append(f"Length ({row['Length (mm)']:.0f} mm) is right for your hand")
@@ -254,5 +299,5 @@ def reasons(row, grip, hand_len_mm, hand_wid_mm, tier_cfg) -> list[str]:
         out.append(f"Light at {row['Weight (grams)']:.0f} g")
     pts = tier_cfg[row["Tier"]][1]
     if pts:
-        out.append(f"{TIER_LABEL[row['Tier']]} ({pts:+d} pts)")
-    return out[:4]
+        out.append(f"{TIER_LABEL[row['Tier']]} brand tier ({pts:+d} pts)")
+    return out[:5]

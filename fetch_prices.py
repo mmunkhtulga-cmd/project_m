@@ -10,8 +10,8 @@ Two sources (use either or both; results merge into prices.csv):
   2) serpapi  - Google Shopping results through SerpAPI (needs SERPAPI_KEY, has a free tier).
                 SERPAPI_KEY=xxxx python fetch_prices.py serpapi
 
-Only a shortlist is priced (the mice that rank in the top few for every grip, hand size and
-budget bucket), not all ~1500 models. Use --all to price everything, --dry-run to just list.
+Only a shortlist is priced (editor's choice mice plus the mice that rank in the top few for every
+grip, hand size and budget bucket), not all ~1500 models. Use --all to price everything, --dry-run to just list.
 
 Be a good citizen: respect each site's terms and robots.txt, keep the delay, and use this
 for personal price-checking. Prices in other currencies: pass --rate (e.g. --rate 0.14 for CNY).
@@ -63,7 +63,7 @@ def match_name(title: str, names: dict[str, set[str]]) -> str | None:
 def shortlist(per_bucket: int = 6) -> list[str]:
     db = core.load_db()
     cfg = core.TIER_DEFAULTS
-    names: list[str] = []
+    names: list[str] = db.loc[db["Editor"], "Name"].tolist()   # editor's choice always get priced
     for grip in core.GRIPS:
         for ln, wd in core.HAND_PRESETS.values():
             sc = core.score(db, grip, ln * 10, wd * 10, cfg)
