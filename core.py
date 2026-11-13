@@ -54,7 +54,7 @@ NAME_RULES = [
 EDITORS_PICKS = [
     "Hitscan Hyperlight",
     "Logitech G Pro X Superlight", "Logitech G Pro X Superlight 2", "Logitech G Pro X2 Superstrike",
-    "Razer DeathAdder V3 HyperSpeed", "Razer DeathAdder V3",
+    "Razer DeathAdder V3 HyperSpeed", "Razer DeathAdder V3", "Razer DeathAdder V4 Pro",
     "Razer Viper V3 Pro", "Razer Viper V4 Pro",
     "Endgame Gear OP1 8k", "Endgame Gear OP1 8k v2", "Endgame Gear XM2 8k", "Endgame Gear XM2 8k v2",
     "Endgame Gear OP1w 4k", "Endgame Gear OP1w 4k v2", "Endgame Gear XM2w 4k", "Endgame Gear XM2w 4k v2",
@@ -74,17 +74,17 @@ TIER_LABEL = {"Top": "Top", "Mid": "Mid / enthusiast", "Other": "Other", "Low-mi
 # Target mouse size as a fraction of hand size (community rule of thumb, tune freely).
 GRIPS = {
     "Palm": dict(
-        len_r=0.67, wid_r=0.74, height=41.0,
+        len_r=0.67, wid_r=0.74, height=41.0, len_sig=(4.5, 8.0),
         blurb="Your whole palm rests on the mouse and your fingers lie flat on the buttons.",
         best="Longer, taller mice with a rounded hump.",
     ),
     "Claw": dict(
-        len_r=0.64, wid_r=0.72, height=39.5,
+        len_r=0.64, wid_r=0.72, height=39.5, len_sig=(5.0, 6.5),
         blurb="The back of your palm touches the mouse while your fingers arch over the buttons.",
         best="Medium mice with the hump toward the back.",
     ),
     "Fingertip": dict(
-        len_r=0.60, wid_r=0.68, height=37.5,
+        len_r=0.60, wid_r=0.68, height=37.5, len_sig=(5.0, 6.0),
         blurb="Only your fingertips touch the mouse. Your palm floats above it.",
         best="Short, low, light mice.",
     ),
@@ -103,9 +103,21 @@ SHAPE_SCORE = {
 }
 
 
+# Length: (tolerance when the mouse is shorter than ideal, when it is longer). A longer mouse is
+# easier to live with than a shorter one, so the long side is more forgiving.
+# Width: the target is kept inside the range real mice come in, and tolerance is a bit wider.
+WIDTH_RANGE = (56.0, 70.0)
+WIDTH_SIGMA = 4.5
+# Top-tier brands and editor's choice mice are proven designs, so they get a small allowance on
+# hand fit: this share of the gap to a perfect fit is forgiven (combined when both apply).
+FIT_FORGIVENESS = {"Top": 0.08, "Editor": 0.12}
+FORGIVE_WITHIN_MM = 10.0   # no allowance when the mouse is further than this from the ideal length
+
+
 def targets(grip: str, hand_len_mm: float, hand_wid_mm: float) -> dict:
     g = GRIPS[grip]
-    return dict(length=hand_len_mm * g["len_r"], width=hand_wid_mm * g["wid_r"], height=g["height"])
+    width = min(max(hand_wid_mm * g["wid_r"], WIDTH_RANGE[0]), WIDTH_RANGE[1])
+    return dict(length=hand_len_mm * g["len_r"], width=width, height=g["height"])
 
 
 # ----------------------------------------------------------------------------
@@ -230,13 +242,18 @@ def score(df, grip, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Prefer ligh
           editor_pts=EDITOR_POINTS):
     t = targets(grip, hand_len_mm, hand_wid_mm)
     out = df.copy()
-    s_len = _gauss(out["Length (mm)"] - t["length"], 5.0)
-    s_wid = _gauss(out["Width (mm)"] - t["width"], 3.0)
+    d_len = out["Length (mm)"] - t["length"]
+    s_len = _gauss(d_len, np.where(d_len < 0, GRIPS[grip]["len_sig"][0], GRIPS[grip]["len_sig"][1]))
+    s_wid = _gauss(out["Width (mm)"] - t["width"], WIDTH_SIGMA)
     s_hgt = _gauss(out["Height (mm)"] - t["height"], 3.0)
     s_hump = out["Hump placement"].map(HUMP_SCORE[grip]).fillna(0.6)
     s_shape = out["Shape"].map(SHAPE_SCORE[grip]).fillna(0.85)
     out["s_len"], out["s_wid"], out["s_hump"] = s_len, s_wid, s_hump
-    out["Fit"] = 70 * (0.40 * s_len + 0.18 * s_wid + 0.12 * s_hgt + 0.18 * s_hump + 0.12 * s_shape)
+    out["Fit raw"] = 70 * (0.40 * s_len + 0.18 * s_wid + 0.12 * s_hgt + 0.18 * s_hump + 0.12 * s_shape)
+    allow = 1 - (1 - np.where(out["Tier"] == "Top", FIT_FORGIVENESS["Top"], 0.0)) \
+                * (1 - np.where(out["Editor"], FIT_FORGIVENESS["Editor"], 0.0))
+    allow = allow * (np.abs(d_len) <= FORGIVE_WITHIN_MM)
+    out["Fit"] = out["Fit raw"] + allow * (70 - out["Fit raw"])
     out["Recency"] = RECENCY_POINTS[recency] * out["Modernity"]
     out["Weight bonus"] = WEIGHT_POINTS[weight_pref] * ((80 - out["Weight (grams)"]) / 40).clip(0, 1)
     out["Brand pts"] = out["Tier"].map(lambda k: tier_cfg[k][1])
@@ -285,9 +302,14 @@ def reasons(row, grip, hand_len_mm, hand_wid_mm, tier_cfg) -> list[str]:
     if abs(dl) <= 4:
         out.append(f"Length ({row['Length (mm)']:.0f} mm) is right for your hand")
     elif dl > 0:
-        out.append(f"A little long for your hand (+{dl:.0f} mm)")
+        out.append(f"Runs long for your hand (+{dl:.0f} mm)")
     else:
-        out.append(f"A little short for your hand ({dl:.0f} mm)")
+        out.append(f"Runs short for your hand ({dl:.0f} mm)")
+    dw = row["Width (mm)"] - t["width"]
+    if abs(dw) > 6:
+        out.append(f"{'Wider' if dw > 0 else 'Narrower'} than ideal ({dw:+.0f} mm)")
+    if row["Fit raw"] < MIN_FIT:
+        out.append("Borderline fit, included as a proven design")
     if row["s_hump"] >= 0.9:
         out.append(f"{row['Hump placement'].replace(' - ', ', ').lower()} hump suits {grip.lower()} grip")
     tech = [str(row["Sensor"])] if isinstance(row["Sensor"], str) else []
@@ -300,4 +322,4 @@ def reasons(row, grip, hand_len_mm, hand_wid_mm, tier_cfg) -> list[str]:
     pts = tier_cfg[row["Tier"]][1]
     if pts:
         out.append(f"{TIER_LABEL[row['Tier']]} brand tier ({pts:+d} pts)")
-    return out[:5]
+    return out[:6]

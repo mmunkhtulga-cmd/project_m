@@ -28,6 +28,15 @@ Hand size -> grip -> budget -> recommendations. The full ranked list is a toggle
 
 All points and stretch percentages can be changed live in the sidebar (Brand tiers and points).
 
+## Hand fit (core.py)
+
+- Length tolerance is lopsided: too long costs less than too short (claw: 5 mm tolerance on the short side, 6.5 mm on the long side).
+- The width target is clamped to 56-70 mm, the range real mice come in, so odd hand proportions can't push it out of reach.
+- Top-tier brands and editor's choice mice get a small allowance: 8% / 12% of the gap to a perfect fit is
+  forgiven (about 19% when both apply). Constants: `FIT_FORGIVENESS`. The allowance only applies within 10 mm of the ideal length. Their results say "Borderline fit" when the
+  allowance is what kept them in.
+- The hand step warns when width looks wrong for length (outside 0.40-0.54 of the length).
+
 ## Older mice
 
 The database has no release year, so age is inferred from the sensor (through tracking speed, a few sensors

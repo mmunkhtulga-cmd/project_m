@@ -115,6 +115,11 @@ def step_hand():
         a.number_input("Length (cm)", 13.0, 25.0, step=0.1, key="w_len")
         b.number_input("Width (cm)", 6.0, 12.5, step=0.1, key="w_wid")
         keep("w_len", "w_wid")
+        ratio = S.w_wid / S.w_len
+        if not 0.40 <= ratio <= 0.54:
+            st.warning("Your width looks unusual for your length. Measure across the knuckles "
+                       "without the thumb (usually 8 to 9 cm for a 17 to 19 cm hand) and check "
+                       "both numbers.")
         st.caption("No ruler handy? Pick the closest size:")
         for col, (name, (ln, wd)) in zip(st.columns(3), core.HAND_PRESETS.items()):
             col.button(f"{name} ({ln:g} x {wd:g})", key=f"hp_{name}", on_click=set_hand,
@@ -283,7 +288,9 @@ def step_results():
         st.markdown(
             f"- **Fit (up to 70):** length, width, height, hump position and shape for a "
             f"{P['w_grip'].lower()} grip. Your target is about {t['length']:.0f} mm long and "
-            f"{t['width']:.0f} mm wide. Poor fits are dropped.\n"
+            f"{t['width']:.0f} mm wide. Longer than ideal is penalized less than shorter. "
+            f"Poor fits are dropped. Top-tier brands and editor's choice mice get a small allowance "
+            f"on fit (only within 10 mm of the ideal length) because they are proven designs.\n"
             f"- **Newer tech (up to {core.RECENCY_POINTS[P['w_recency']]}):** sensor generation and "
             f"polling rate. The database has no release dates, so age is inferred from the tech. "
             f"Dated mice are hidden unless you include them.\n"
