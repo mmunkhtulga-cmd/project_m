@@ -4,11 +4,15 @@ tested and reused by fetch_prices.py).
 
 Raw score = fit (0-70) + newer tech (0-10/20/30) + weight bonus (0-7) + brand points + editor's choice
 Displayed score = raw as a % of the best possible total
-Eligibility   = price <= budget * (1 + tier stretch)  and  era is not "Dated"
+Eligibility   = price <= budget * (1 + tier stretch). Mice with outdated sensors are removed
+                from the database on load (see OUTDATED_SENSOR), so there is no "dated" toggle.
 """
 from __future__ import annotations
 
+import base64
 import re
+import urllib.parse
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -17,6 +21,9 @@ import pandas as pd
 HERE = Path(__file__).parent
 DB_PATH = HERE / "mouse_db.csv"
 PRICES_PATH = HERE / "prices.csv"
+LINKS_PATH = HERE / "links.csv"          # optional: Name,MaxGaming_URL,Amazon_URL (exact product pages)
+IMAGES_DIR = HERE / "images"             # built by prepare_images.py
+AMAZON_TAG = ""                          # your Amazon Associates tag, e.g. "yourtag-20" (optional)
 
 # ----------------------------------------------------------------------------
 # BRANDS  (edit freely)
@@ -63,7 +70,28 @@ EDITORS_PICKS = [
     "ATK A9 Air", "ATK A9 Air+", "ATK Phantom",
     "RAWM Leviathan V4", "MelGeek Horus",
 ]
+# Whole families of editor's choice mice (regex on the full name)
+EDITORS_PATTERNS = [r"^LAMZU Thorn", r"^LAMZU Atlantis Mini"]      # not the regular Atlantis
 EDITOR_POINTS = 10
+
+# "Not sure of my grip": universal-shape mice, by hand size (hand length: <17.5 small, <19.5 medium)
+_MEDIUM_UP = ["Logitech G Pro X Superlight", "Logitech G Pro X Superlight 2", "Razer Viper V3 Pro",
+              "Razer Viper V4 Pro", "RAWM Leviathan V4"]
+UNIVERSAL = {
+    "Small": ["Hitscan Hyperlight"],
+    "Medium": _MEDIUM_UP,
+    "Large": _MEDIUM_UP + ["MelGeek Horus"],
+}
+BRACKET_LIMITS_MM = (175, 195)
+
+# Sensors that are dropped from the database: PAW3335 / PAW3370 and older PixArt parts, plus
+# generic or unlabelled sensors. Proprietary gaming sensors (HERO, BAMF, XS-1, Focus, TrueMove...)
+# and PAW3311 are kept on purpose. Editor's choice mice are never dropped.
+OUTDATED_SENSOR = (r"^(PMW|ADNS|A3\d|PAW3335|PAW3370|PAW3327|PAW3315|PAW3305|PAW3212|PAW3104"
+                   r"|PAW3333|PAW3318|PAW3328)")
+GENERIC_SENSORS = {"4G", "3G Laser", "8925", "8960", "A825", "S203", "S205", "S6006", "S9808", "AM010",
+                   "BlueTrack", "Laser Engine", "MLT04", "Optical", "BC3332-A", "BC3332-S", "AIM-WL",
+                   "AL530", "VB010411", "SDNS3988", "1855", "Advanced Optical Tracking", "AI", "F1", "Core"}
 # tier -> (budget stretch %, brand points)
 TIER_DEFAULTS = {"Top": (20, 8), "Mid": (10, 5), "Other": (0, 0), "Low-mid": (0, -4)}
 TIER_LABEL = {"Top": "Top", "Mid": "Mid / enthusiast", "Other": "Other", "Low-mid": "Low to mid"}
@@ -115,6 +143,9 @@ FORGIVE_WITHIN_MM = 10.0   # no allowance when the mouse is further than this fr
 
 
 def targets(grip: str, hand_len_mm: float, hand_wid_mm: float) -> dict:
+    if grip == "Not sure":   # universal shapes: average over the three grips
+        ts = [targets(g, hand_len_mm, hand_wid_mm) for g in GRIPS]
+        return {k: sum(t[k] for t in ts) / len(ts) for k in ("length", "width", "height")}
     g = GRIPS[grip]
     width = min(max(hand_wid_mm * g["wid_r"], WIDTH_RANGE[0]), WIDTH_RANGE[1])
     return dict(length=hand_len_mm * g["len_r"], width=width, height=g["height"])
@@ -196,7 +227,11 @@ def load_db() -> pd.DataFrame:
     df["Brand"] = df["Brand"].replace(BRAND_FIX)
     df["Tier"] = [classify(b, n, c) for b, n, c in zip(df["Brand"], df["Name"], df["Connectivity"])]
     picks = {n.lower() for n in EDITORS_PICKS}
-    df["Editor"] = df["Name"].str.lower().isin(picks)
+    df["Editor"] = (df["Name"].str.lower().isin(picks)
+                    | df["Name"].apply(lambda n: any(re.search(p, n, flags=re.I) for p in EDITORS_PATTERNS)))
+    sensor = df["Sensor"].fillna("")
+    outdated = sensor.str.match(OUTDATED_SENSOR) | sensor.isin(GENERIC_SENSORS) | (sensor == "")
+    df = df[~outdated | df["Editor"]].copy()
     df["Modernity"] = (0.7 * df.apply(lambda r: sensor_score(r["Sensor"], r["Tracking speed (IPS)"]), axis=1)
                        + 0.3 * df["Polling rate (Hz)"].map(polling_score))
     df["Era"] = df["Modernity"].map(era_label)
@@ -210,7 +245,8 @@ def read_prices(src) -> pd.DataFrame | None:
     try:
         p = pd.read_csv(src, sep=None, engine="python")
         p.columns = [c.strip() for c in p.columns]
-        return p[["Name", "Price_USD"]].dropna()
+        cols = ["Name", "Price_USD"] + (["Source"] if "Source" in p.columns else [])
+        return p[cols].dropna(subset=["Name", "Price_USD"])
     except Exception:
         return None
 
@@ -224,6 +260,10 @@ def apply_prices(df: pd.DataFrame, prices: pd.DataFrame | None) -> pd.DataFrame:
     hit = key.isin(lookup)
     df.loc[hit, "Price"] = key[hit].map(lookup).astype(float)
     df.loc[hit, "Price source"] = "verified"
+    df["Price where"] = ""
+    if "Source" in prices.columns:
+        where = dict(zip(prices["Name"].str.lower().str.strip(), prices["Source"].fillna("")))
+        df.loc[hit, "Price where"] = key[hit].map(where).fillna("")
     return df
 
 
@@ -238,18 +278,25 @@ RECENCY_POINTS = {"Low": 10, "Medium": 20, "High": 30}
 WEIGHT_POINTS = {"Don't mind": 0, "Prefer light": 4, "Ultralight": 7}
 
 
+def _fit(df, grip, hand_len_mm, hand_wid_mm):
+    """Hand fit (0-70) of every row for one grip, plus the pieces the cards need."""
+    t = targets(grip, hand_len_mm, hand_wid_mm)
+    d_len = df["Length (mm)"] - t["length"]
+    s_len = _gauss(d_len, np.where(d_len < 0, GRIPS[grip]["len_sig"][0], GRIPS[grip]["len_sig"][1]))
+    s_wid = _gauss(df["Width (mm)"] - t["width"], WIDTH_SIGMA)
+    s_hgt = _gauss(df["Height (mm)"] - t["height"], 3.0)
+    s_hump = df["Hump placement"].map(HUMP_SCORE[grip]).fillna(0.6)
+    s_shape = df["Shape"].map(SHAPE_SCORE[grip]).fillna(0.85)
+    fit_raw = 70 * (0.40 * s_len + 0.18 * s_wid + 0.12 * s_hgt + 0.18 * s_hump + 0.12 * s_shape)
+    return fit_raw, d_len, s_len, s_wid, s_hump
+
+
 def score(df, grip, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Prefer light", recency="Medium",
           editor_pts=EDITOR_POINTS):
-    t = targets(grip, hand_len_mm, hand_wid_mm)
     out = df.copy()
-    d_len = out["Length (mm)"] - t["length"]
-    s_len = _gauss(d_len, np.where(d_len < 0, GRIPS[grip]["len_sig"][0], GRIPS[grip]["len_sig"][1]))
-    s_wid = _gauss(out["Width (mm)"] - t["width"], WIDTH_SIGMA)
-    s_hgt = _gauss(out["Height (mm)"] - t["height"], 3.0)
-    s_hump = out["Hump placement"].map(HUMP_SCORE[grip]).fillna(0.6)
-    s_shape = out["Shape"].map(SHAPE_SCORE[grip]).fillna(0.85)
+    fit_raw, d_len, s_len, s_wid, s_hump = _fit(out, grip, hand_len_mm, hand_wid_mm)
     out["s_len"], out["s_wid"], out["s_hump"] = s_len, s_wid, s_hump
-    out["Fit raw"] = 70 * (0.40 * s_len + 0.18 * s_wid + 0.12 * s_hgt + 0.18 * s_hump + 0.12 * s_shape)
+    out["Fit raw"] = fit_raw
     allow = 1 - (1 - np.where(out["Tier"] == "Top", FIT_FORGIVENESS["Top"], 0.0)) \
                 * (1 - np.where(out["Editor"], FIT_FORGIVENESS["Editor"], 0.0))
     allow = allow * (np.abs(d_len) <= FORGIVE_WITHIN_MM)
@@ -261,10 +308,13 @@ def score(df, grip, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Prefer ligh
     out["Raw"] = out["Fit"] + out["Recency"] + out["Weight bonus"] + out["Brand pts"] + out["Editor pts"]
     # Display score: share of the best possible total under the current settings, so a
     # perfect-fit editor's choice from a top brand reads 100 and the rest stay distinguishable.
-    best = (70 + RECENCY_POINTS[recency] + WEIGHT_POINTS[weight_pref]
-            + max(v[1] for v in tier_cfg.values()) + editor_pts)
-    out["Score"] = (out["Raw"] / best * 100).clip(0, 100)
+    out["Score"] = (out["Raw"] / _best(tier_cfg, weight_pref, recency, editor_pts) * 100).clip(0, 100)
     return out
+
+
+def _best(tier_cfg, weight_pref, recency, editor_pts):
+    return (70 + RECENCY_POINTS[recency] + WEIGHT_POINTS[weight_pref]
+            + max(v[1] for v in tier_cfg.values()) + editor_pts)
 
 
 def budget_caps(budget, tier_cfg) -> dict:
@@ -274,22 +324,18 @@ def budget_caps(budget, tier_cfg) -> dict:
 MIN_FIT = 35  # out of 70: below this a mouse simply doesn't suit the hand/grip
 
 
-def recommend(scored, budget, tier_cfg, include_dated=False, max_per_brand=2, n=10):
+def recommend(scored, budget, tier_cfg, max_per_brand=2, n=10):
     caps = scored["Tier"].map(budget_caps(budget, tier_cfg))
     out = scored.assign(**{"Budget cap": caps})
     out = out[(out["Price"] <= out["Budget cap"]) & (out["Fit"] >= MIN_FIT)]
-    if not include_dated:
-        out = out[(out["Era"] != "Dated") | out["Editor"]]
     out = out.sort_values("Raw", ascending=False)
     out = out.groupby("Brand", sort=False).head(max_per_brand)
     return out.sort_values("Raw", ascending=False).head(n).reset_index(drop=True)
 
 
-def cheapest_fit(scored, include_dated=False):
+def cheapest_fit(scored):
     """Cheapest mouse that fits the hand (used to explain an empty result)."""
     pool = scored[scored["Fit"] >= MIN_FIT]
-    if not include_dated:
-        pool = pool[(pool["Era"] != "Dated") | pool["Editor"]]
     return None if pool.empty else pool.sort_values("Price").iloc[0]
 
 
@@ -310,7 +356,9 @@ def reasons(row, grip, hand_len_mm, hand_wid_mm, tier_cfg) -> list[str]:
         out.append(f"{'Wider' if dw > 0 else 'Narrower'} than ideal ({dw:+.0f} mm)")
     if row["Fit raw"] < MIN_FIT:
         out.append("Borderline fit, included as a proven design")
-    if row["s_hump"] >= 0.9:
+    if grip == "Not sure":
+        out.insert(1 if row["Editor"] else 0, "Universal shape that works for palm, claw and fingertip")
+    elif row["s_hump"] >= 0.9:
         out.append(f"{row['Hump placement'].replace(' - ', ', ').lower()} hump suits {grip.lower()} grip")
     tech = [str(row["Sensor"])] if isinstance(row["Sensor"], str) else []
     if row["Polling rate (Hz)"] >= 4000:
@@ -323,3 +371,134 @@ def reasons(row, grip, hand_len_mm, hand_wid_mm, tier_cfg) -> list[str]:
     if pts:
         out.append(f"{TIER_LABEL[row['Tier']]} brand tier ({pts:+d} pts)")
     return out[:6]
+
+
+# ----------------------------------------------------------------------------
+# "NOT SURE OF MY GRIP"
+# ----------------------------------------------------------------------------
+def hand_bracket(hand_len_mm: float) -> str:
+    return "Small" if hand_len_mm < BRACKET_LIMITS_MM[0] else ("Medium" if hand_len_mm < BRACKET_LIMITS_MM[1] else "Large")
+
+
+def universal_picks(pool, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Prefer light",
+                    recency="Medium", editor_pts=EDITOR_POINTS):
+    """Curated universal-shape mice for this hand size, ranked by their average score over all grips.
+    Budget is not a hard filter here (the list is curated); the UI flags picks above budget."""
+    names = UNIVERSAL[hand_bracket(hand_len_mm)]
+    cand = pool[pool["Name"].isin(names)]
+    if cand.empty:
+        return cand.assign(Raw=[], Score=[])
+    raws, base = [], None
+    for g in GRIPS:
+        s = score(cand, g, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref, recency, editor_pts)
+        raws.append(s.set_index("Name")["Raw"])
+        if g == "Claw":
+            base = s
+    out = base.copy()
+    out["Raw"] = out["Name"].map(pd.concat(raws, axis=1).mean(axis=1))
+    out["Score"] = (out["Raw"] / _best(tier_cfg, weight_pref, recency, editor_pts) * 100).clip(0, 100)
+    return out.sort_values("Raw", ascending=False).reset_index(drop=True)
+
+
+# ----------------------------------------------------------------------------
+# CARD HELPERS (text, links, images)
+# ----------------------------------------------------------------------------
+def slugify(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
+def split_name(name: str, brand: str):
+    model = name[len(brand):].strip() if name.lower().startswith(brand.lower()) else name
+    return brand, (model or name)
+
+
+def grip_fits(rows, hand_len_mm, hand_wid_mm):
+    """Add fit_<grip> columns (raw hand fit 0-70 for each grip)."""
+    rows = rows.copy()
+    for g in GRIPS:
+        rows[f"fit_{g}"] = _fit(rows, g, hand_len_mm, hand_wid_mm)[0].values
+    return rows
+
+
+GOOD_FIT = 49   # 70% of the 70 fit points counts as "suits this grip"
+
+
+def suits(row) -> list[str]:
+    ok = [g for g in GRIPS if row.get(f"fit_{g}", 0) >= GOOD_FIT]
+    if not ok:
+        ok = [max(GRIPS, key=lambda g: row.get(f"fit_{g}", 0))]
+    return ok
+
+
+def describe(row, universal=False) -> str:
+    if universal:
+        return "Universal shape that works for palm, claw and fingertip."
+    length = row["Length (mm)"]
+    size = "Compact" if length < 114 else ("Mid-size" if length < 122 else "Full-size")
+    shape = " ergonomic" if row["Shape"] == "Ergonomic" else ""
+    grips = " / ".join(g.lower() for g in suits(row))
+    return f"{size}{shape} {row['Connectivity'].lower()} mouse for {grips}."
+
+
+def why_chips(row, grip, hand_len_mm, conn_pref, budget) -> list[str]:
+    chips = []
+    cm = int(hand_len_mm // 10)
+    chips.append(f"{cm}-{cm + 1} cm ({hand_bracket(hand_len_mm)}) hand")
+    if grip == "Not sure":
+        chips.append("Universal shape")
+    elif row.get(f"fit_{grip}", 0) >= GOOD_FIT:
+        chips.append(f"{grip} grip support")
+    if row["Editor"]:
+        chips.append("Editor's choice")
+    if conn_pref != "Any" and row["Connectivity"] == conn_pref:
+        chips.append(f"{conn_pref} preference")
+    if row["Polling rate (Hz)"] >= 4000:
+        chips.append(f"{row['Polling rate (Hz)'] / 1000:.0f}K polling")
+    if row["Price"] <= budget:
+        chips.append("Within budget")
+    return chips[:5]
+
+
+@lru_cache(maxsize=1)
+def _links_table():
+    if not LINKS_PATH.exists():
+        return {}
+    try:
+        t = pd.read_csv(LINKS_PATH).fillna("")
+        return {r["Name"].lower().strip(): (r.get("MaxGaming_URL", ""), r.get("Amazon_URL", ""))
+                for _, r in t.iterrows()}
+    except Exception:
+        return {}
+
+
+def retailer_links(name: str) -> dict:
+    """{'maxgaming': (url, exact), 'amazon': (url, exact)}. Without an exact product page in
+    links.csv the buttons fall back to a search, and the UI labels them as searches."""
+    mg, az = _links_table().get(name.lower().strip(), ("", ""))
+    q = urllib.parse.quote_plus(name)
+    tag = f"&tag={AMAZON_TAG}" if AMAZON_TAG else ""
+    return dict(
+        maxgaming=(mg or f"https://www.google.com/search?q=site%3Aus.maxgaming.com+{q}", bool(mg)),
+        amazon=((az + (tag.replace("&", "?" if "?" not in az else "&", 1) if az and AMAZON_TAG and "tag=" not in az else ""))
+                if az else f"https://www.amazon.com/s?k={q}{tag}", bool(az)),
+    )
+
+
+@lru_cache(maxsize=1)
+def _manifest():
+    p = IMAGES_DIR / "manifest.csv"
+    if not p.exists():
+        return {}
+    t = pd.read_csv(p).fillna("")
+    return {r["slug"]: (r["bg"], r["shared_from"]) for _, r in t.iterrows()}
+
+
+@lru_cache(maxsize=256)
+def image_data(name: str):
+    """(data URI, tile background hex or '') for a mouse, or None when there is no photo yet."""
+    slug = slugify(name)
+    p = IMAGES_DIR / f"{slug}.webp"
+    if not p.exists():
+        return None
+    bg, _ = _manifest().get(slug, ("", ""))
+    return "data:image/webp;base64," + base64.b64encode(p.read_bytes()).decode(), bg

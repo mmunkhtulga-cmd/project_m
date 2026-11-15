@@ -68,7 +68,7 @@ def shortlist(per_bucket: int = 6) -> list[str]:
         for ln, wd in core.HAND_PRESETS.values():
             sc = core.score(db, grip, ln * 10, wd * 10, cfg)
             for budget in (40, 70, 100, 150):
-                recs = core.recommend(sc, budget, cfg, False, 2, per_bucket)
+                recs = core.recommend(sc, budget, cfg, 2, per_bucket)
                 names += recs["Name"].tolist()
     return list(dict.fromkeys(names))
 
@@ -121,8 +121,10 @@ def write_prices(cache: dict) -> None:
     rows = {}
     existing = core.read_prices(core.PRICES_PATH) if core.PRICES_PATH.exists() else None
     if existing is not None:
-        for n, p in zip(existing["Name"], existing["Price_USD"]):
-            rows[n] = (p, "manual", "")
+        old = pd.read_csv(core.PRICES_PATH).fillna("")
+        for _, r in old.iterrows():
+            if r["Name"]:
+                rows[r["Name"]] = (r["Price_USD"], r.get("Source", "") or "manual", r.get("Updated", ""))
     for n, v in cache.items():
         rows[n] = (v["price"], v["source"], v["date"])
     df = pd.DataFrame([(n, *v) for n, v in rows.items()], columns=["Name", "Price_USD", "Source", "Updated"])
@@ -137,7 +139,7 @@ def main(argv=None) -> int:
     ap.add_argument("--store", help="shopify: store URL, e.g. https://example-brand.com")
     ap.add_argument("--brand", help="shopify: brand name as in the database, e.g. Pulsar")
     ap.add_argument("--rate", type=float, default=1.0, help="multiply prices by this to get USD")
-    ap.add_argument("--all", action="store_true", help="price every non-dated mouse, not just the shortlist")
+    ap.add_argument("--all", action="store_true", help="price every mouse, not just the shortlist")
     ap.add_argument("--per-bucket", type=int, default=6)
     ap.add_argument("--limit", type=int, default=0, help="serpapi: max lookups this run")
     ap.add_argument("--refresh", action="store_true", help="re-fetch names already in the cache")
@@ -145,7 +147,7 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
 
     if a.all:
-        names = core.load_db().query("Era != 'Dated'")["Name"].tolist()
+        names = core.load_db()["Name"].tolist()
     else:
         names = shortlist(a.per_bucket)
     print(f"{len(names)} mice to price")

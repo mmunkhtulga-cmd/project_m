@@ -3,49 +3,54 @@
     pip install -r requirements.txt
     streamlit run app.py
 
-Hand size -> grip -> budget -> recommendations. The full ranked list is a toggle on the results page.
+Hand size -> grip (or "not sure") -> budget -> top 3 matches as cards. The full ranked list is a toggle.
 
 | File | What it does |
 |---|---|
-| `app.py` | Streamlit UI |
-| `core.py` | Data cleaning, brand tiers, editor's picks, scoring. Edit tiers and picks here |
-| `fetch_prices.py` | Builds `prices.csv` with real prices (Shopify store feeds or Google Shopping via SerpAPI) |
-| `prices.csv` | `Name,Price_USD`. Listed mice show a real price, everything else is estimated |
-| `mouse_db.csv` | The database (semicolon separated) |
+| `app.py` | Streamlit UI (dark card layout) |
+| `core.py` | Database cleaning, brand tiers, editor's picks, sensor rule, scoring, universal picks, links, images |
+| `images/` | Product photos the cards show (built by `prepare_images.py`) |
+| `prepare_images.py` | Matches a folder of photos to database names, crops and converts them |
+| `images_needed.csv` | Mice that still have no photo, editor's choice and universal picks first |
+| `prices.csv` | `Name,Price_USD,Source,Updated`. Listed mice show a real price; everything else is an estimate |
+| `links.csv` | `Name,MaxGaming_URL,Amazon_URL`: exact product pages. Without one, the button searches instead |
+| `fetch_prices.py` | Builds `prices.csv` from Shopify store feeds or Google Shopping (SerpAPI) |
 
-## Brand tiers (core.py: TIER_BRANDS, NAME_RULES)
+## Database rule
 
-- **Top (+8 points, budget stretch 20%):** Razer, Logitech, Lamzu, Hitscan, CRDRAKO, Pulsar, Endgame Gear,
-  Arbiter, MelGeek, Ninjutso, Teevolution, Vaxee. Model rules: ROG only Keris II / Harpe II / Harpe Ace Extreme+Mini,
-  RAWM only ER21 and Leviathan V4, Zowie wireless only.
-- **Mid / enthusiast (+5, stretch 10%):** ATK, MCHOSE, VGN, VXE, Finalmouse, WALLHACK, Keychron, HyperX, UNIUS, Scyrox,
-  IPI, WLMOUSE, Waizowl, G-Wolves, Akitsu, other name brands (SteelSeries, Glorious, ROCCAT, Cooler Master...),
-  other ASUS, Zowie wired, Corsair Sabre.
-- **Low to mid (-4, no stretch):** Attack Shark, AULA, AJAZZ, RK, Darmoshark, EWEADN, Redragon, Delux, other Corsair.
-- **Other (0):** every brand not listed, plus older RAWM.
-- **Editor's choice (+10, never hidden as dated):** see `EDITORS_PICKS`. Not in this database yet:
-  ATK F1 V3, ATK Phantom, Logitech "Compact", UNIUS White Lotus, WALLHACK. Add exact names when the database updates.
+Mice with a PAW3335, PAW3370 or older PixArt sensor, and mice with generic or unlabelled sensors, are removed
+on load (1,174 of 1,533 mice remain). Proprietary sensors (HERO, BAMF, XS-1, Focus, TrueMove...) and PAW3311
+are kept. Editor's choice mice are never removed. Edit `OUTDATED_SENSOR` / `GENERIC_SENSORS` in `core.py`.
 
-All points and stretch percentages can be changed live in the sidebar (Brand tiers and points).
+## Not sure of my grip
 
-## Hand fit (core.py)
+A curated list of universal-shape mice by hand length (`UNIVERSAL` in `core.py`):
 
-- Length tolerance is lopsided: too long costs less than too short (claw: 5 mm tolerance on the short side, 6.5 mm on the long side).
-- The width target is clamped to 56-70 mm, the range real mice come in, so odd hand proportions can't push it out of reach.
-- Top-tier brands and editor's choice mice get a small allowance: 8% / 12% of the gap to a perfect fit is
-  forgiven (about 19% when both apply). Constants: `FIT_FORGIVENESS`. The allowance only applies within 10 mm of the ideal length. Their results say "Borderline fit" when the
-  allowance is what kept them in.
-- The hand step warns when width looks wrong for length (outside 0.40-0.54 of the length).
+- Small (< 17.5 cm): Hitscan Hyperlight
+- Medium (17.5 - 19.5 cm): Logitech G Pro X Superlight 1 and 2, Razer Viper V3 Pro and V4 Pro, RAWM Leviathan V4
+- Large (> 19.5 cm): the medium list plus MelGeek Horus
 
-## Older mice
+They are ranked by their average score across palm, claw and fingertip. Budget only flags them ("Above your budget").
 
-The database has no release year, so age is inferred from the sensor (through tracking speed, a few sensors
-pinned by hand) and the polling rate. "Dated" mice are hidden unless you switch on "Include dated mice".
+## Photos
 
-## Real prices
+    python prepare_images.py path/to/photos     # file names ~ database names, e.g. ENDGAME_GEAR_OP18K.webp
+
+Names that don't match exactly go in `ALIASES`. v2 revisions reuse the original's photo until they get their own
+(`SHARED`; listed in `images/manifest.csv`). The card tile takes the photo's background colour.
+
+## Prices and links
 
     python fetch_prices.py shopify --dry-run
     python fetch_prices.py shopify --store https://BRAND-STORE --brand "Pulsar"
     SERPAPI_KEY=xxxx python fetch_prices.py serpapi --limit 90
 
-Editor's choice mice are always on the shortlist. You can also edit `prices.csv` by hand.
+`prices.csv` is seeded with MaxGaming (US) prices for the Endgame Gear mice and the Lamzu Maya X, checked on
+2026-11-15. Entries marked "(sale)" are clearance prices and will change. Set `AMAZON_TAG` in `core.py` to add
+your Amazon Associates tag to Amazon links.
+
+## Brand tiers, editor's choice, hand fit
+
+See the top of `core.py`: `TIER_BRANDS`, `NAME_RULES` (ROG recent only, RAWM recent only, Zowie wireless first,
+Akitsu mid, Corsair Sabre mid), `EDITORS_PICKS` and `EDITORS_PATTERNS` (Lamzu Thorn and Atlantis Mini families),
+`FIT_FORGIVENESS`. Points and budget stretch can also be changed live in the sidebar.
