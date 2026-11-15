@@ -290,7 +290,7 @@ def card(r, rank, universal):
     brand, model = core.split_name(r["Name"], r["Brand"])
     label = {1: "Best match", 2: "Second-best"}.get(rank, f"Match #{rank}")
     grip = "All" if universal else " / ".join(core.suits(r))
-    tiles = tile(f'{r["Weight (grams)"]:.0f} g', "WEIGHT") + tile(r["Connectivity"], "CONNECTION") + tile(grip, "GRIP")
+    tiles = tile(f'{r["Weight (grams)"]:.0f} g', core.weight_class(r["Weight (grams)"]).upper()) + tile(r["Connectivity"], "CONNECTION") + tile(grip, "GRIP")
     edit = '<div class="mf-edit">Editor\'s choice</div>' if r["Editor"] else ""
     why = core.why_chips(r, P["w_grip"], P["w_len"] * 10, P["w_conn"], P["w_budget"])[:3]
     items = "".join(f"<li>{e(w)}</li>" for w in why)

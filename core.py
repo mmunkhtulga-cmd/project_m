@@ -83,6 +83,10 @@ UNIVERSAL = {
     "Large": _MEDIUM_UP + ["MelGeek Horus"],
 }
 BRACKET_LIMITS_MM = (175, 195)
+# Universal picks are the curated names above plus any symmetrical mouse in the pool whose hand
+# average fit across palm, claw and fingertip is at least UNIVERSAL_MIN_FIT (of 70). Best UNIVERSAL_MAX kept.
+UNIVERSAL_MIN_FIT = 40
+UNIVERSAL_MAX = 12
 
 # Sensors that are dropped from the database: PAW3335 / PAW3370 and older PixArt parts, plus
 # generic or unlabelled sensors. Proprietary gaming sensors (HERO, BAMF, XS-1, Focus, TrueMove...)
@@ -276,6 +280,15 @@ def _gauss(delta, sigma):
 
 RECENCY_POINTS = {"Low": 10, "Medium": 20, "High": 30}
 WEIGHT_POINTS = {"Don't mind": 0, "Prefer light": 4, "Ultralight": 7}
+# Weight classes (grams). Ultralight <= 50, light 51-65, medium 66-80, heavy 81+.
+WEIGHT_CLASSES = [(50, "Ultralight"), (65, "Light"), (80, "Medium")]
+# Weight bonus ramp per preference: (full points up to, zero points from). "Prefer light" fully
+# rewards anything up to 65 g; "Ultralight" only rewards 50 g and below.
+WEIGHT_RAMP = {"Don't mind": (0, 1), "Prefer light": (65, 80), "Ultralight": (50, 65)}
+
+
+def weight_class(grams) -> str:
+    return next((name for limit, name in WEIGHT_CLASSES if round(grams) <= limit), "Heavy")
 
 
 def _fit(df, grip, hand_len_mm, hand_wid_mm):
@@ -302,7 +315,8 @@ def score(df, grip, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Prefer ligh
     allow = allow * (np.abs(d_len) <= FORGIVE_WITHIN_MM)
     out["Fit"] = out["Fit raw"] + allow * (70 - out["Fit raw"])
     out["Recency"] = RECENCY_POINTS[recency] * out["Modernity"]
-    out["Weight bonus"] = WEIGHT_POINTS[weight_pref] * ((80 - out["Weight (grams)"]) / 40).clip(0, 1)
+    full, zero = WEIGHT_RAMP[weight_pref]
+    out["Weight bonus"] = WEIGHT_POINTS[weight_pref] * ((zero - out["Weight (grams)"]) / (zero - full)).clip(0, 1)
     out["Brand pts"] = out["Tier"].map(lambda k: tier_cfg[k][1])
     out["Editor pts"] = np.where(out["Editor"], editor_pts, 0)
     out["Raw"] = out["Fit"] + out["Recency"] + out["Weight bonus"] + out["Brand pts"] + out["Editor pts"]
@@ -365,8 +379,8 @@ def reasons(row, grip, hand_len_mm, hand_wid_mm, tier_cfg) -> list[str]:
         tech.append(f"{row['Polling rate (Hz)'] / 1000:.0f}K polling")
     if tech:
         out.append(f"{row['Era']} tech: " + ", ".join(tech))
-    if row["Weight (grams)"] <= 55:
-        out.append(f"Light at {row['Weight (grams)']:.0f} g")
+    if row["Weight (grams)"] <= WEIGHT_CLASSES[1][0]:
+        out.append(f"{weight_class(row['Weight (grams)'])} at {row['Weight (grams)']:.0f} g")
     pts = tier_cfg[row["Tier"]][1]
     if pts:
         out.append(f"{TIER_LABEL[row['Tier']]} brand tier ({pts:+d} pts)")
@@ -385,7 +399,8 @@ def universal_picks(pool, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Prefe
     """Curated universal-shape mice for this hand size, ranked by their average score over all grips.
     Budget is not a hard filter here (the list is curated); the UI flags picks above budget."""
     names = UNIVERSAL[hand_bracket(hand_len_mm)]
-    cand = pool[pool["Name"].isin(names)]
+    fits = pd.concat([_fit(pool, g, hand_len_mm, hand_wid_mm)[0] for g in GRIPS], axis=1).mean(axis=1)
+    cand = pool[pool["Name"].isin(names) | ((pool["Shape"] == "Symmetrical") & (fits >= UNIVERSAL_MIN_FIT))]
     if cand.empty:
         return cand.assign(Raw=[], Score=[])
     raws, base = [], None
@@ -397,7 +412,7 @@ def universal_picks(pool, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Prefe
     out = base.copy()
     out["Raw"] = out["Name"].map(pd.concat(raws, axis=1).mean(axis=1))
     out["Score"] = (out["Raw"] / _best(tier_cfg, weight_pref, recency, editor_pts) * 100).clip(0, 100)
-    return out.sort_values("Raw", ascending=False).reset_index(drop=True)
+    return out.sort_values("Raw", ascending=False).head(UNIVERSAL_MAX).reset_index(drop=True)
 
 
 # ----------------------------------------------------------------------------
