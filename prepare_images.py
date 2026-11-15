@@ -16,8 +16,8 @@ SHARED, flagged "shared_from" in images/manifest.csv). Replace them whenever you
 It also writes images_needed.csv: editor's choice, universal-shape and shortlisted mice that
 still have no photo, so you know what to send next.
 """
+pip install -r requirements.txt
 from __future__ import annotations
-
 import csv
 import re
 import sys
