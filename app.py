@@ -2,7 +2,7 @@
 Mouse finder.   Run:  streamlit run app.py
 
 Hand size -> grip (or "not sure") -> budget -> top matches as cards (full list optional).
-Logic lives in core.py. Photos: images/ (prepare_images.py). Prices: prices.csv / fetch_prices.py.
+Logic lives in core.py. Prices: prices.csv / fetch_prices.py.
 Exact retailer pages: links.csv.
 """
 import html
@@ -18,65 +18,51 @@ S = st.session_state
 CSS = r"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+:root { --bg:#232C33; --surf:#2B363F; --surf2:#313E48; --teal:#5A7D7C; --blue:#A0C1D1; --lav:#B5B2C2; --ice:#DADFF7; }
 html, body, .stApp, .stApp button, .stApp input, .stApp label { font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif; }
 .block-container { max-width: 1180px; padding-top: 2rem; }
 footer, #MainMenu { visibility: hidden; }
-.mf-step { color: #7E8B9D; font-size: .72rem; font-weight: 700; letter-spacing: .14em; }
-.mf-q { font-size: 2rem; font-weight: 800; letter-spacing: -.02em; margin: .3rem 0 .4rem; color: #F2F5F9; }
-.mf-sub { color: #8B97A8; margin: 0 0 1.2rem; max-width: 52ch; }
-.mf-head { display: flex; justify-content: space-between; color: #7E8B9D; font-size: .7rem; font-weight: 700; letter-spacing: .14em; margin: 1.2rem 0 .7rem; }
-.mf-card { display: flex; background: #121821; border: 1px solid #232D3B; border-radius: 18px; overflow: hidden; margin-bottom: 16px; color: #E8EDF3; }
-.mf-hero { border-color: #2D6B52; background: linear-gradient(120deg, #12261F 0%, #121821 42%); box-shadow: 0 0 0 1px rgba(53,194,139,.12), 0 18px 50px rgba(0,0,0,.35); }
-.mf-img { position: relative; flex: 0 0 34%; min-height: 250px; display: flex; align-items: center; justify-content: center; padding: 22px; background: #E9EDF2; }
-.mf-small .mf-img { flex: 0 0 36%; min-height: 220px; }
-.mf-img img { max-width: 100%; max-height: 230px; object-fit: contain; }
-.mf-noimg { background: linear-gradient(160deg, #1A2330, #0F151D); flex-direction: column; gap: 6px; }
-.mf-initial { font-size: 3.2rem; font-weight: 800; color: #2B384A; }
-.mf-soon { font-size: .7rem; color: #6F7C8F; letter-spacing: .1em; text-transform: uppercase; }
-.mf-badge, .mf-rank { position: absolute; top: 14px; padding: 4px 10px; border-radius: 999px; font-size: .68rem; font-weight: 700; background: rgba(11,15,20,.84); color: #DCE3EC; border: 1px solid rgba(255,255,255,.14); }
-.mf-badge { left: 14px; }
-.mf-rank { right: 14px; }
-.mf-hero .mf-badge { color: #7CE3B7; border-color: rgba(124,227,183,.4); }
-.mf-main { flex: 1; min-width: 0; padding: 24px 26px; }
-.mf-brand { color: #8B97A8; font-size: .7rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
-.mf-name { font-size: 1.9rem; font-weight: 800; letter-spacing: -.02em; line-height: 1.1; margin: .25rem 0 .7rem; color: #F2F5F9; }
-.mf-small .mf-name { font-size: 1.3rem; }
-.mf-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: .2rem 0 .8rem; }
-.mf-chip { padding: 3px 10px; border-radius: 999px; font-size: .74rem; font-weight: 600; background: #1A222D; border: 1px solid #2A3442; color: #C8D1DD; }
-.mf-gold { color: #F5C96A; border-color: #5B4A22; background: #241E10; }
-.mf-green .mf-chip { color: #7CE3B7; border-color: #2D6B52; background: #12261F; }
-.mf-desc { color: #A7B2C0; font-size: .92rem; margin: 0 0 1rem; }
-.mf-why { border: 1px solid #2A4A6B; background: linear-gradient(135deg, #142235, #101A28); border-radius: 14px; padding: 14px 16px; }
-.mf-why-k { color: #6FA8FF; font-size: .68rem; font-weight: 800; letter-spacing: .14em; }
-.mf-why-h { font-size: 1.05rem; font-weight: 700; margin: .25rem 0; color: #F2F5F9; }
-.mf-why p { color: #9FB0C6; font-size: .86rem; margin: 0 0 .6rem; }
-.mf-why .mf-chips { margin-bottom: 0; }
-.mf-side { flex: 0 0 27%; padding: 24px 24px 24px 0; display: flex; flex-direction: column; gap: 10px; }
-.mf-price { font-size: 1.35rem; font-weight: 800; color: #F2F5F9; }
-.mf-price small { font-size: .78rem; font-weight: 500; color: #8B97A8; margin-left: 4px; }
-.mf-warn { color: #F5C96A; font-size: .76rem; font-weight: 600; margin-top: -4px; }
-.mf-btn { display: block; text-align: center; padding: 12px 14px; border-radius: 12px; font-size: .88rem; font-weight: 700; text-decoration: none !important; color: #E8EDF3 !important; background: #161E29; border: 1px solid #2A3442; }
-.mf-btn:hover { border-color: #3F5068; background: #1B2431; }
-.mf-primary { background: linear-gradient(180deg, #2F86FF, #1E6AE6); border-color: #3C8CFF; color: #fff !important; }
-.mf-primary:hover { background: linear-gradient(180deg, #4093FF, #2673EE); }
-.mf-details { border: 1px solid #2A3442; border-radius: 12px; background: #161E29; }
-.mf-details summary { cursor: pointer; padding: 11px 14px; text-align: center; font-size: .88rem; font-weight: 700; color: #E8EDF3; list-style: none; }
-.mf-details summary::-webkit-details-marker { display: none; }
-.mf-table { width: 100%; border-collapse: collapse; font-size: .8rem; margin: 0 0 6px; }
-.mf-table td { padding: 6px 14px; border-top: 1px solid #222C3A; color: #C8D1DD; }
-.mf-table td:first-child { color: #8B97A8; }
-.mf-table td:last-child { text-align: right; color: #8B97A8; }
+.mf-step { color: var(--blue); font-size: .72rem; font-weight: 700; letter-spacing: .14em; }
+.mf-q { font-size: 2rem; font-weight: 800; letter-spacing: -.02em; margin: .3rem 0 .4rem; color: var(--ice); }
+.mf-sub { color: var(--lav); margin: 0 0 1.2rem; max-width: 52ch; }
+.mf-head { display: flex; justify-content: space-between; color: var(--blue); font-size: .7rem; font-weight: 700; letter-spacing: .14em; margin: 1.2rem 0 .7rem; padding-bottom: .5rem; border-bottom: 1px solid var(--teal); }
+.mf-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 16px; align-items: stretch; }
+.mf-card { display: flex; flex-direction: column; background: var(--surf); border: 1px solid var(--teal); border-radius: 0; padding: 18px; color: var(--ice); }
+.mf-hero { border: 2px solid var(--blue); }
+.mf-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+.mf-tag { padding: 4px 10px; font-size: .66rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; background: var(--lav); color: var(--bg); }
+.mf-hero .mf-tag { background: var(--ice); }
+.mf-rank { font-size: 1.5rem; font-weight: 800; color: var(--teal); line-height: 1; }
+.mf-hero .mf-rank { color: var(--blue); }
+.mf-brand { color: var(--blue); font-size: .7rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+.mf-name { font-size: 1.45rem; font-weight: 800; letter-spacing: -.02em; line-height: 1.15; margin: .25rem 0 .9rem; color: var(--ice); }
+.mf-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 12px; }
+.mf-tile { background: var(--bg); border: 1px solid var(--teal); border-radius: 0; padding: 10px 6px; min-height: 64px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; }
+.mf-tile b { font-size: .92rem; font-weight: 800; color: var(--ice); line-height: 1.15; }
+.mf-tile span { font-size: .6rem; font-weight: 700; letter-spacing: .12em; color: var(--blue); margin-top: 4px; }
+.mf-edit { align-self: flex-start; margin-bottom: 10px; padding: 3px 9px; font-size: .68rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; background: var(--teal); color: var(--ice); }
+.mf-desc { color: var(--lav); font-size: .86rem; margin: 0 0 12px; }
+.mf-why-k { color: var(--blue); font-size: .66rem; font-weight: 800; letter-spacing: .14em; }
 .mf-list { margin: .4rem 0 .9rem; padding: 0; list-style: none; }
-.mf-list li { color: #C8D1DD; font-size: .84rem; padding: 2px 0 2px 22px; position: relative; }
-.mf-list li::before { content: "✓"; position: absolute; left: 0; color: #35C28B; font-weight: 800; }
-.mf-small .mf-main { padding: 20px 22px 0; }
-.mf-small .mf-actions { display: flex; flex-direction: column; gap: 10px; padding: 0 22px 22px; }
-@media (max-width: 900px) {
-  .mf-card { flex-direction: column; }
-  .mf-img, .mf-small .mf-img { flex: 0 0 auto; min-height: 200px; }
-  .mf-side { padding: 0 24px 24px; }
-  .mf-main { padding: 20px; }
-}
+.mf-list li { color: var(--ice); font-size: .82rem; padding: 2px 0 2px 18px; position: relative; }
+.mf-list li::before { content: ""; position: absolute; left: 0; top: .62em; width: 7px; height: 7px; background: var(--blue); }
+.mf-spacer { flex: 1; }
+.mf-price { font-size: 1.35rem; font-weight: 800; color: var(--ice); margin: 4px 0 10px; }
+.mf-price small { font-size: .76rem; font-weight: 500; color: var(--lav); margin-left: 4px; }
+.mf-warn { color: var(--ice); background: var(--teal); display: inline-block; padding: 2px 8px; font-size: .72rem; font-weight: 700; margin: -4px 0 10px; }
+.mf-actions { display: flex; flex-direction: column; gap: 8px; }
+.mf-btn { display: block; text-align: center; padding: 11px 12px; border-radius: 0; font-size: .85rem; font-weight: 700; text-decoration: none !important; color: var(--ice) !important; background: transparent; border: 1px solid var(--teal); }
+.mf-btn:hover { background: var(--surf2); border-color: var(--blue); }
+.mf-primary { background: var(--blue); border-color: var(--blue); color: var(--bg) !important; }
+.mf-primary:hover { background: var(--ice); border-color: var(--ice); }
+.mf-details { border: 1px solid var(--teal); border-radius: 0; background: var(--bg); }
+.mf-details summary { cursor: pointer; padding: 10px 12px; text-align: center; font-size: .85rem; font-weight: 700; color: var(--ice); list-style: none; }
+.mf-details summary::-webkit-details-marker { display: none; }
+.mf-table { width: 100%; border-collapse: collapse; font-size: .78rem; margin: 0 0 6px; }
+.mf-table td { padding: 6px 10px; border-top: 1px solid var(--surf2); color: var(--ice); }
+.mf-table td:first-child { color: var(--blue); }
+.mf-table td:last-child { text-align: right; color: var(--lav); }
+@media (max-width: 900px) { .mf-grid { grid-template-columns: 1fr; } }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -261,23 +247,6 @@ def e(x):
     return html.escape(str(x))
 
 
-def chips(items, cls="", gold=()):
-    out = "".join(f'<span class="mf-chip{" mf-gold" if i in gold else ""}">{e(i)}</span>' for i in items)
-    return f'<div class="mf-chips {cls}">{out}</div>'
-
-
-def image_tile(r, rank):
-    label = {1: "Best match", 2: "Second-best match"}.get(rank, f"Match #{rank}")
-    badges = f'<span class="mf-badge">{label}</span><span class="mf-rank">#{rank}</span>'
-    data = core.image_data(r["Name"])
-    if data:
-        uri, bg = data
-        style = f' style="background:{bg}"' if bg else ""
-        return f'<div class="mf-img"{style}>{badges}<img src="{uri}" alt="{e(r["Name"])}"></div>'
-    return (f'<div class="mf-img mf-noimg">{badges}<span class="mf-initial">{e(r["Brand"][:1])}</span>'
-            f'<span class="mf-soon">Photo coming soon</span></div>')
-
-
 def price_block(r):
     over = '<div class="mf-warn">Above your budget</div>' if r["Price"] > P["w_budget"] else ""
     if r["Price source"] == "verified":
@@ -313,42 +282,27 @@ def fit_details(r):
             f'<table class="mf-table">{body}</table></details>')
 
 
-def card_parts(r, universal):
+def tile(value, label):
+    return f'<div class="mf-tile"><b>{e(value)}</b><span>{e(label)}</span></div>'
+
+
+def card(r, rank, universal):
     brand, model = core.split_name(r["Name"], r["Brand"])
-    grips = "All grips" if universal else " / ".join(core.suits(r)) + " grip"
-    spec = [f'{r["Weight (grams)"]:.0f} g', r["Connectivity"], grips]
-    if r["Editor"]:
-        spec.append("Editor's choice")
-    return brand, model, chips(spec, gold=("Editor's choice",)), e(core.describe(r, universal))
-
-
-def hero_card(r, universal):
-    brand, model, spec, desc = card_parts(r, universal)
-    L = P["w_len"] * 10
-    why = core.why_chips(r, P["w_grip"], L, P["w_conn"], P["w_budget"])
-    if universal:
-        para = f"A universal shape that suits {core.hand_bracket(L).lower()} hands whichever grip you end up using."
-    else:
-        para = (f"It matches your {P['w_grip'].lower()} grip, {P['w_len']:.1f} cm hand and "
-                f"${P['w_budget']} budget more closely than anything else we looked at.")
-    return (f'<div class="mf-card mf-hero">{image_tile(r, 1)}'
-            f'<div class="mf-main"><div class="mf-brand">{e(brand)}</div><div class="mf-name">{e(model)}</div>'
-            f'{spec}<p class="mf-desc">{desc}</p>'
-            f'<div class="mf-why"><div class="mf-why-k">WHY THIS RANKS FIRST</div>'
-            f'<div class="mf-why-h">The closest overall fit for your profile</div><p>{e(para)}</p>'
-            f'{chips(why, "mf-green")}</div></div>'
-            f'<div class="mf-side">{price_block(r)}{buttons(r["Name"])}{fit_details(r)}</div></div>')
-
-
-def small_card(r, rank, universal):
-    brand, model, spec, desc = card_parts(r, universal)
+    label = {1: "Best match", 2: "Second-best"}.get(rank, f"Match #{rank}")
+    grip = "All" if universal else " / ".join(core.suits(r))
+    tiles = tile(f'{r["Weight (grams)"]:.0f} g', "WEIGHT") + tile(r["Connectivity"], "CONNECTION") + tile(grip, "GRIP")
+    edit = '<div class="mf-edit">Editor\'s choice</div>' if r["Editor"] else ""
     why = core.why_chips(r, P["w_grip"], P["w_len"] * 10, P["w_conn"], P["w_budget"])[:3]
     items = "".join(f"<li>{e(w)}</li>" for w in why)
-    return (f'<div class="mf-card mf-small">{image_tile(r, rank)}'
-            f'<div style="flex:1;min-width:0"><div class="mf-main"><div class="mf-brand">{e(brand)}</div>'
-            f'<div class="mf-name">{e(model)}</div>{spec}<p class="mf-desc">{desc}</p>'
-            f'<div class="mf-brand">WHY IT MATCHES</div><ul class="mf-list">{items}</ul>{price_block(r)}</div>'
-            f'<div class="mf-actions">{buttons(r["Name"])}{fit_details(r)}</div></div></div>')
+    cls = "mf-card mf-hero" if rank == 1 else "mf-card"
+    return (f'<div class="{cls}"><div class="mf-top"><span class="mf-tag">{label}</span>'
+            f'<span class="mf-rank">0{rank}</span></div>'
+            f'<div class="mf-brand">{e(brand)}</div><div class="mf-name">{e(model)}</div>'
+            f'<div class="mf-tiles">{tiles}</div>{edit}'
+            f'<p class="mf-desc">{e(core.describe(r, universal))}</p>'
+            f'<div class="mf-why-k">WHY IT MATCHES</div><ul class="mf-list">{items}</ul>'
+            f'<div class="mf-spacer"></div>{price_block(r)}'
+            f'<div class="mf-actions">{buttons(r["Name"])}{fit_details(r)}</div></div>')
 
 
 # ----------------------------------------------------------------------------
@@ -422,16 +376,11 @@ def step_results():
     top = list(recs.head(3).iterrows())
     st.markdown('<div class="mf-head"><span>TOP MATCHES</span><span>BEST FIT FIRST</span></div>',
                 unsafe_allow_html=True)
-    st.markdown(hero_card(top[0][1], universal), unsafe_allow_html=True)
-    if len(top) > 1:
-        for col, (rank, (_, r)) in zip(st.columns(2, gap="medium"), enumerate(top[1:], start=2)):
-            with col:
-                st.markdown(small_card(r, rank, universal), unsafe_allow_html=True)
+    cards = "".join(card(r, rank, universal) for rank, (_, r) in enumerate(top, start=1))
+    st.markdown(f'<div class="mf-grid">{cards}</div>', unsafe_allow_html=True)
     if (recs.head(3)["Price source"] == "estimate").any():
         st.caption("Prices marked as estimates are guesses because the database has no price data. "
                    "Add real prices in the sidebar, or run fetch_prices.py, for an accurate budget filter.")
-    if any(core.image_data(n) is None for n in recs.head(3)["Name"]):
-        st.caption("Some photos are still missing. See images_needed.csv.")
 
     bind("w_list")
     st.toggle("Show full ranked list", key="w_list")
