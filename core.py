@@ -78,6 +78,8 @@ EDITORS_SENSOR_RULES = [(r"^ATK\b", r"3950|3955")]
 VALUE_PATTERN = r"^ATK (?:A9 Air|F1 V2 (?:Ultimate|Extreme)|Zero|Ghost|U2 V2|Z1 V2|X1 V2)"
 VALUE_EDGE_PTS = 4
 VALUE_BUDGET_MAX = 80
+# Superseded models removed from the database (regex on name): the v1 OP1 and XM2 (their v2 stays).
+EXCLUDE_PATTERNS = [r"^Endgame Gear (?:OP1|XM2)\w* \d+k$"]
 # Grip focus: mice built for specific grips. (regex on name, grip families it is made for).
 # A matching grip gets +GRIP_FOCUS_PTS, any other grip gets -GRIP_FOCUS_PTS. Families: Palm, Claw, Fingertip.
 GRIP_FOCUS = [(r"^Endgame Gear OP1", ["Claw", "Fingertip"]),
@@ -266,6 +268,9 @@ def load_db() -> pd.DataFrame:
     # drop non-mouse outliers (rings, trackballs, oversized devices)
     df = df[df["Length (mm)"].between(75, 140) & df["Width (mm)"].between(45, 80)].copy()
     n_outliers = raw_rows - len(df)
+    gone = df["Name"].apply(lambda n: any(re.search(p, n, flags=re.I) for p in EXCLUDE_PATTERNS))
+    n_excluded = int(gone.sum())
+    df = df[~gone].copy()
     df["Brand"] = df["Brand"].replace(BRAND_FIX)
     df["Tier"] = [classify(b, n, c) for b, n, c in zip(df["Brand"], df["Name"], df["Connectivity"])]
     picks = {n.lower() for n in EDITORS_PICKS}
@@ -285,7 +290,7 @@ def load_db() -> pd.DataFrame:
     df["Price"] = df.apply(estimate_price, axis=1)
     df["Price source"] = "estimate"
     df = df.reset_index(drop=True)
-    df.attrs["report"] = dict(raw=raw_rows, outliers=n_outliers, outdated=n_old, kept=len(df), missing=missing)
+    df.attrs["report"] = dict(raw=raw_rows, outliers=n_outliers, excluded=n_excluded, outdated=n_old, kept=len(df), missing=missing)
     return df
 
 

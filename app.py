@@ -496,7 +496,7 @@ def tab_dataset(target):
     if rep:
         a, b, c, d = st.columns(4)
         a.metric("Rows in file", f"{rep['raw']:,}")
-        b.metric("Removed", f"{rep['outliers'] + rep['outdated']:,}")
+        b.metric("Removed", f"{rep['outliers'] + rep['outdated'] + rep.get('excluded', 0):,}")
         c.metric("Mice used", f"{rep['kept']:,}")
         d.metric("Verified prices", f"{int((db['Price source'] == 'verified').sum()):,}")
         st.markdown("##### How the data is cleaned")
@@ -506,7 +506,8 @@ def tab_dataset(target):
             f"2. **Outliers:** {rep['outliers']:,} rows outside 75 to 140 mm long or 45 to 80 mm wide "
             f"(rings, trackballs, oversized devices) are dropped.\n"
             f"3. **Old tech:** {rep['outdated']:,} rows with a PAW3335, PAW3370 or older sensor, or a generic "
-            f"or unlabelled one, are dropped. Editor's choice mice are always kept.\n"
+            f"or unlabelled one, are dropped. Editor's choice mice are always kept. "
+            f"{rep.get('excluded', 0):,} superseded models (Endgame Gear OP1 and XM2 v1) are also dropped.\n"
             f"4. **Enrichment:** brand names are repaired, every mouse gets a brand tier, and a modernity "
             f"score is inferred from sensor speed and polling rate because the data has no release year.\n"
             f"5. **Prices:** merged from `prices.csv`; the rest get an estimate that is labelled as one.")

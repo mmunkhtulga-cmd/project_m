@@ -59,6 +59,7 @@ Derived in `core.load_db()`: `Tier`, `Editor`, `Modernity`, `Era`, `Price`, `Pri
 2. Rows outside 75 to 140 mm long or 45 to 80 mm wide are dropped (rings, trackballs, oversized devices).
 3. Mice with a PAW3335, PAW3370 or older PixArt sensor, or a generic or unlabelled sensor, are dropped
    (1,533 rows in the original file, 1,174 used). Editor's choice mice are always kept.
+   The v1 Endgame Gear OP1 and XM2 are also dropped, since the v2 replaces them (`EXCLUDE_PATTERNS` in `core.py`).
 4. Split brand names are repaired (for example "Attack" + "Shark" -> "Attack Shark").
 5. Each mouse gets a brand tier, an editor's choice flag, and a modernity score inferred from sensor speed and
    polling rate (the data has no release year).
