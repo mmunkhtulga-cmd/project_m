@@ -71,7 +71,10 @@ EDITORS_PICKS = [
 ]
 # Whole families of editor's choice mice (regex on the full name)
 EDITORS_PATTERNS = [r"^LAMZU Thorn", r"^LAMZU Atlantis Mini",      # not the regular Atlantis
-                    r"^Scyrox V(6|8)\b", r"^MCHOSE L7( Pro)?\b"]
+                    r"^Scyrox V(6|8)\b", r"^MCHOSE L7( Pro)?\b",
+                    r"^VAXEE\b",                                       # every VAXEE mouse
+                    r"^Pulsar\b.*(ZywOo|Crazylight)",                   # Pulsar ZywOo and Crazylight series
+                    r"^Zowie (EC|FK)\d"]                               # Zowie EC and FK series
 # Editor's choice by name AND sensor: (regex on name, regex on sensor). Recent ATK mice with PAW3950/3955.
 EDITORS_SENSOR_RULES = [(r"^ATK\b", r"3950|3955")]
 # Budget edge: these ATK mice get VALUE_EDGE_PTS extra points when the budget is <= VALUE_BUDGET_MAX.
