@@ -1,13 +1,15 @@
 """
 Mouse finder.   Run:  streamlit run app.py
 
-Hand size -> grip (or "not sure") -> budget -> top matches as cards (full list optional).
-Logic lives in core.py. Prices: prices.csv / fetch_prices.py.
+Hand size -> grip (or "not sure") -> budget -> results in tabs: top matches, charts, full list,
+dataset documentation, and an explanation of the score. Logic lives in core.py.
+Prices: prices.csv / fetch_prices.py.
 Exact retailer pages: links.csv.
 """
 import html
-import io
 
+import altair as alt
+import pandas as pd
 import streamlit as st
 
 import core
@@ -79,7 +81,7 @@ if "P" not in S:
     S.P = dict(
         w_grip=None, w_len=18.5, w_wid=8.5, w_budget=70, w_hand="Right", w_conn="Any",
         w_shape="Any", w_maxw=100, w_wpref="Prefer light", w_recency="Medium",
-        w_perbrand=2, w_list=False, w_rows=15, p_editor=core.EDITOR_POINTS, prices_bytes=None,
+        w_perbrand=2, w_rows=15, p_editor=core.EDITOR_POINTS,
         **{f"s_{t}": v[0] for t, v in core.TIER_DEFAULTS.items()},
         **{f"p_{t}": v[1] for t, v in core.TIER_DEFAULTS.items()},
     )
@@ -136,9 +138,7 @@ def tier_config():
 
 
 def get_db():
-    prices = core.read_prices(io.BytesIO(P["prices_bytes"])) if P["prices_bytes"] else None
-    if prices is None and core.PRICES_PATH.exists():
-        prices = core.read_prices(core.PRICES_PATH)
+    prices = core.read_prices(core.PRICES_PATH) if core.PRICES_PATH.exists() else None
     return core.apply_prices(base_db(), prices)
 
 
@@ -180,6 +180,10 @@ def step_head(n, title, sub):
 # ----------------------------------------------------------------------------
 def step_hand():
     with centered():
+        st.markdown('<div class="mf-brand">MOUSE FINDER</div>'
+                    f'<p class="mf-sub">Match your hand and grip against the measured size and shape of '
+                    f'{len(base_db()):,} gaming mice, then see the best fits for your budget.</p>',
+                    unsafe_allow_html=True)
         step_head(1, "How big is your hand?",
                   "Length: wrist crease to the tip of your middle finger, hand flat. "
                   "Width: across the knuckles, thumb not included.")
@@ -309,6 +313,13 @@ def card(r, rank, universal):
 # ----------------------------------------------------------------------------
 # Results
 # ----------------------------------------------------------------------------
+CLASS_SCALE = alt.Scale(domain=["Ultralight", "Light", "Medium", "Heavy"],
+                        range=["#DADFF7", "#A0C1D1", "#B5B2C2", "#5A7D7C"])
+PARTS = {"Fit": "Hand fit", "Recency": "Newer tech", "Weight bonus": "Weight", "Brand pts": "Brand",
+         "Editor pts": "Editor's choice", "Budget adj": "Budget edge / penalty"}
+PART_COLORS = ["#A0C1D1", "#DADFF7", "#B5B2C2", "#5A7D7C", "#E3C98B", "#D98C8C"]
+
+
 def sidebar():
     with st.sidebar:
         st.subheader("Filters")
@@ -326,7 +337,7 @@ def sidebar():
         st.slider("Max results per brand", 1, 5, key="w_perbrand")
         keep("w_budget", "w_hand", "w_conn", "w_shape", "w_maxw", "w_wpref", "w_recency", "w_perbrand")
 
-        with st.expander("Brand tiers and points"):
+        with st.expander("Advanced: brand tiers and points"):
             keys = [f"s_{t}" for t in core.TIER_DEFAULTS] + [f"p_{t}" for t in core.TIER_DEFAULTS]
             bind(*keys, "p_editor")
             for t in core.TIER_DEFAULTS:
@@ -337,22 +348,218 @@ def sidebar():
             st.caption("Stretch lets a tier be suggested a little above your budget.")
             keep(*keys, "p_editor")
 
-        with st.expander("Real prices"):
-            st.caption("Upload a CSV with the columns Name and Price_USD (optional: Source), "
-                       "or build one with fetch_prices.py.")
-            up = st.file_uploader("Prices file", type="csv", label_visibility="collapsed")
-            if up is not None:
-                P["prices_bytes"] = up.getvalue()
-            if P["prices_bytes"]:
-                st.success("Using your price file.")
+
+def chart_data(recs):
+    d = recs.copy()
+    d["Class"] = d["Weight (grams)"].map(core.weight_class)
+    return d.rename(columns={"Length (mm)": "Length", "Width (mm)": "Width", "Weight (grams)": "Weight"})
+
+
+def chart_fit_map(recs, target):
+    d = chart_data(recs)
+    tip = ["Name", alt.Tooltip("Length:Q", format=".0f"), alt.Tooltip("Width:Q", format=".0f"),
+           alt.Tooltip("Weight:Q", format=".0f"), alt.Tooltip("Price:Q", format="$.0f"),
+           alt.Tooltip("Score:Q", format=".0f")]
+    pts = alt.Chart(d).mark_circle(opacity=.9, stroke="#232C33", strokeWidth=1).encode(
+        x=alt.X("Length:Q", title="Length (mm)", scale=alt.Scale(zero=False, padding=12)),
+        y=alt.Y("Width:Q", title="Width (mm)", scale=alt.Scale(zero=False, padding=12)),
+        size=alt.Size("Score:Q", scale=alt.Scale(range=[70, 420]), legend=None),
+        color=alt.Color("Class:N", scale=CLASS_SCALE, legend=alt.Legend(title="Weight class")), tooltip=tip)
+    ideal = alt.Chart(pd.DataFrame({"Length": [target["length"]], "Width": [target["width"]],
+                                    "Name": ["Ideal size for your hand"]})
+                      ).mark_point(shape="cross", size=380, filled=True, color="#FFFFFF"
+                                   ).encode(x="Length:Q", y="Width:Q", tooltip=["Name"])
+    return (pts + ideal).properties(height=340).interactive()
+
+
+def chart_value(recs, budget):
+    d = chart_data(recs)
+    pts = alt.Chart(d).mark_circle(size=120, opacity=.9, stroke="#232C33", strokeWidth=1).encode(
+        x=alt.X("Price:Q", title="Price (USD)", scale=alt.Scale(zero=False)),
+        y=alt.Y("Score:Q", title="Match score", scale=alt.Scale(zero=False)),
+        color=alt.Color("Class:N", scale=CLASS_SCALE, legend=alt.Legend(title="Weight class")),
+        tooltip=["Name", alt.Tooltip("Price:Q", format="$.0f"), alt.Tooltip("Score:Q", format=".0f"),
+                 alt.Tooltip("Weight:Q", format=".0f")])
+    rule = alt.Chart(pd.DataFrame({"Budget": [budget]})).mark_rule(strokeDash=[5, 4], color="#A0C1D1"
+                                                                     ).encode(x="Budget:Q")
+    return (pts + rule).properties(height=340).interactive()
+
+
+def chart_breakdown(recs, n=8):
+    top = recs.head(n)
+    rows = [{"Mouse": r["Name"], "Part": label, "Points": float(r[col])}
+            for _, r in top.iterrows() for col, label in PARTS.items()]
+    return alt.Chart(pd.DataFrame(rows)).mark_bar().encode(
+        y=alt.Y("Mouse:N", sort=list(top["Name"]), title=None),
+        x=alt.X("sum(Points):Q", title="Points"),
+        color=alt.Color("Part:N", scale=alt.Scale(domain=list(PARTS.values()), range=PART_COLORS),
+                        legend=alt.Legend(title=None, orient="bottom")),
+        tooltip=["Mouse", "Part", alt.Tooltip("Points:Q", format=".1f")]
+    ).properties(height=34 * len(top) + 60)
+
+
+def chart_weight_classes(db):
+    order = ["Ultralight", "Light", "Medium", "Heavy"]
+    d = db["Weight (grams)"].map(core.weight_class).value_counts().reindex(order, fill_value=0)
+    d = pd.DataFrame({"Class": d.index, "Mice": d.values})
+    return alt.Chart(d).mark_bar().encode(
+        x=alt.X("Class:N", sort=order, title=None, axis=alt.Axis(labelAngle=0)), y=alt.Y("Mice:Q"),
+        color=alt.Color("Class:N", scale=CLASS_SCALE, legend=None), tooltip=["Class", "Mice"]
+    ).properties(height=260)
+
+
+def chart_lengths(db, target_len):
+    d = db[["Length (mm)"]].rename(columns={"Length (mm)": "Length"})
+    bars = alt.Chart(d).mark_bar(color="#A0C1D1").encode(
+        x=alt.X("Length:Q", bin=alt.Bin(step=2), title="Length (mm)"), y=alt.Y("count()", title="Mice"))
+    rule = alt.Chart(pd.DataFrame({"Ideal": [target_len]})).mark_rule(color="#FFFFFF", strokeWidth=3
+                                                                      ).encode(x="Ideal:Q")
+    return (bars + rule).properties(height=260)
+
+
+def insights(recs, target):
+    best = recs.iloc[0]
+    closest = recs.loc[(recs["Length (mm)"] - target["length"]).abs().idxmin()]
+    lightest = recs.loc[recs["Weight (grams)"].idxmin()]
+    cheapest = recs.loc[recs["Price"].idxmin()]
+    return [
+        f"**Best overall:** {best['Name']} ({best['Score']:.0f}% match, ${best['Price']:.0f}).",
+        f"**Closest size to your ideal:** {closest['Name']}, {closest['Length (mm)']:.0f} mm long "
+        f"against an ideal of about {target['length']:.0f} mm.",
+        f"**Lightest:** {lightest['Name']} at {lightest['Weight (grams)']:.0f} g "
+        f"({core.weight_class(lightest['Weight (grams)']).lower()}).",
+        f"**Cheapest:** {cheapest['Name']} at about ${cheapest['Price']:.0f}.",
+    ]
+
+
+def tab_top(recs, universal):
+    top = list(recs.head(3).iterrows())
+    st.markdown('<div class="mf-head"><span>TOP MATCHES</span><span>BEST FIT FIRST</span></div>',
+                unsafe_allow_html=True)
+    cards = "".join(card(r, rank, universal) for rank, (_, r) in enumerate(top, start=1))
+    st.markdown(f'<div class="mf-grid">{cards}</div>', unsafe_allow_html=True)
+    if (recs.head(3)["Price source"] == "estimate").any():
+        st.caption("Prices marked as estimates are guesses because prices.csv has no entry for that mouse. "
+                   "Add it to prices.csv (or run fetch_prices.py) for an accurate budget filter.")
+
+
+def tab_compare(recs, target, universal):
+    st.markdown("##### Where the matches sit")
+    for line in insights(recs, target):
+        st.markdown(f"- {line}")
+    a, b = st.columns(2, gap="medium")
+    with a:
+        st.markdown("**Size map**")
+        st.altair_chart(chart_fit_map(recs, target), width="stretch")
+        st.caption("The white cross is the ideal size for your hand and grip. Closer is a better fit; "
+                   "bigger dots score higher. Drag to pan, scroll to zoom, hover for details.")
+    with b:
+        st.markdown("**Price vs match score**")
+        st.altair_chart(chart_value(recs, P["w_budget"]), width="stretch")
+        st.caption("Dashed line is your budget. Look top-left for the best value: high score, low price.")
+    st.markdown("**Why the top mice rank where they do**")
+    if universal:
+        st.caption("Universal picks are averaged over every grip, so there is no single score breakdown.")
+    else:
+        st.altair_chart(chart_breakdown(recs), width="stretch")
+        st.caption("Each bar adds up to the mouse's raw score: hand fit (up to 70), newer tech, weight, "
+                   "brand tier, editor's choice, and the budget edge or penalty.")
+
+
+def tab_list(recs):
+    bind("w_rows")
+    st.slider("Rows", 3, 40, key="w_rows")
+    keep("w_rows")
+    table = recs.head(S.w_rows)[
+        ["Name", "Tier", "Editor", "Score", "Price", "Price source", "Length (mm)", "Width (mm)",
+         "Height (mm)", "Weight (grams)", "Shape", "Hump placement", "Sensor",
+         "Polling rate (Hz)", "Connectivity"]].copy()
+    table["Tier"] = table["Tier"].map(core.TIER_LABEL)
+    table["Editor"] = table["Editor"].map({True: "Yes", False: ""})
+    table.index = table.index + 1
+    st.dataframe(table, width="stretch", column_config={
+        "Score": st.column_config.NumberColumn("Match", format="%.0f"),
+        "Price": st.column_config.NumberColumn("Price (USD)", format="$%.0f"),
+        "Tier": "Brand tier", "Editor": "Editor's choice",
+    })
+    st.download_button("Download as CSV", table.to_csv().encode(), "mouse_matches.csv", "text/csv")
+
+
+def tab_dataset(target):
+    base = base_db()
+    rep = base.attrs.get("report")
+    db = get_db()
+    st.markdown("##### The dataset")
+    st.markdown(f"{core.DATA_SOURCE}. Each row is one mouse. The app uses its length, width, height, weight, "
+                "shape, hump placement, hand compatibility, connectivity, sensor, polling rate, tracking "
+                "speed and material. Prices come from `prices.csv` (verified) or a tier-based estimate.")
+    if rep:
+        a, b, c, d = st.columns(4)
+        a.metric("Rows in file", f"{rep['raw']:,}")
+        b.metric("Removed", f"{rep['outliers'] + rep['outdated']:,}")
+        c.metric("Mice used", f"{rep['kept']:,}")
+        d.metric("Verified prices", f"{int((db['Price source'] == 'verified').sum()):,}")
+        st.markdown("##### How the data is cleaned")
+        st.markdown(
+            f"1. **Types and gaps:** measurements are converted to numbers. Missing weight is filled with the "
+            f"median, missing polling rate with 1000 Hz.\n"
+            f"2. **Outliers:** {rep['outliers']:,} rows outside 75 to 140 mm long or 45 to 80 mm wide "
+            f"(rings, trackballs, oversized devices) are dropped.\n"
+            f"3. **Old tech:** {rep['outdated']:,} rows with a PAW3335, PAW3370 or older sensor, or a generic "
+            f"or unlabelled one, are dropped. Editor's choice mice are always kept.\n"
+            f"4. **Enrichment:** brand names are repaired, every mouse gets a brand tier, and a modernity "
+            f"score is inferred from sensor speed and polling rate because the data has no release year.\n"
+            f"5. **Prices:** merged from `prices.csv`; the rest get an estimate that is labelled as one.")
+        miss = pd.DataFrame({"Column": list(rep["missing"]), "Missing in raw file": list(rep["missing"].values())})
+        miss["Share"] = (miss["Missing in raw file"] / rep["raw"]).map("{:.1%}".format)
+        st.markdown("##### Data quality")
+        st.dataframe(miss, hide_index=True, width="stretch")
+    a, b = st.columns(2, gap="medium")
+    with a:
+        st.markdown("**Mice by weight class**")
+        st.altair_chart(chart_weight_classes(db), width="stretch")
+        st.caption("Ultralight is 50 g and below, light 51 to 65 g, medium 66 to 80 g, heavy 81 g and up.")
+    with b:
+        st.markdown("**Mouse lengths in the dataset**")
+        st.altair_chart(chart_lengths(db, target["length"]), width="stretch")
+        st.caption("The white line is the ideal length for your hand and grip.")
+
+
+def tab_about(target):
+    cfg = tier_config()
+    st.markdown("##### Purpose")
+    st.markdown("Choosing a gaming mouse is mostly a fit problem, but reviews rarely say which hands and grips "
+                "a mouse suits. This app turns measured mouse dimensions into a ranked shortlist for your hand "
+                "size, grip and budget, and explains every ranking.")
+    st.markdown("##### How the match score works")
+    st.markdown(
+        f"- **Hand fit (up to 70):** length, width, height, hump position and shape against the ideal for "
+        f"your grip. Your target is about {target['length']:.0f} mm long and {target['width']:.0f} mm wide. "
+        f"Longer than ideal is penalized less than shorter. Poor fits are dropped.\n"
+        f"- **Claw grips:** relaxed claw prefers a mid-center hump, aggressive claw a moderate to aggressive "
+        f"back hump, pincer claw a shorter mouse with a moderate back hump.\n"
+        f"- **Newer tech (up to {core.RECENCY_POINTS[P['w_recency']]}):** sensor generation and polling rate.\n"
+        f"- **Weight (up to {core.WEIGHT_POINTS[P['w_wpref']]}):** \"Prefer light\" rewards up to 65 g, "
+        f"\"Ultralight\" only 50 g and below.\n"
+        f"- **Brand tier:** " + ", ".join(f"{core.TIER_LABEL[k]} {v[1]:+d}" for k, v in cfg.items())
+        + f". **Editor's choice:** +{P['p_editor']}.\n"
+        f"- **Budget:** a mouse is shown if its price is within your budget plus its tier's stretch "
+        f"({', '.join(f'{core.TIER_LABEL[k]} ${v}' for k, v in core.budget_caps(P['w_budget'], cfg).items())}). "
+        f"Going over budget costs points, and selected ATK value mice get a small edge at ${core.VALUE_BUDGET_MAX} "
+        f"or less.\n"
+        f"- **Not sure of your grip:** curated universal-shape mice plus any symmetrical mouse that fits palm, "
+        f"claw and fingertip well, ranked by their average score.")
+    st.markdown("##### Limits")
+    st.markdown("Fit targets are community rules of thumb, not lab measurements. Release years are inferred from "
+                "specs. Estimated prices are rough; only mice listed in `prices.csv` have checked prices.")
 
 
 def step_results():
     sidebar()
     universal = P["w_grip"] == "Not sure"
     st.markdown('<h1 class="mf-q" style="font-size:1.7rem">Recommended mice</h1>', unsafe_allow_html=True)
-    st.write(("Universal shapes" if universal else f"{P['w_grip']} grip")
-             + f", hand {P['w_len']:.1f} x {P['w_wid']:.1f} cm, budget ${P['w_budget']}")
+    st.write((("Universal shapes" if universal else f"{P['w_grip']} grip")
+              + f", hand {P['w_len']:.1f} x {P['w_wid']:.1f} cm, budget ${P['w_budget']}"))
     a, b, c, d, _ = st.columns([1, 1, 1, 1, 4])
     a.button("Edit hand", on_click=go, args=(1,), width="stretch")
     b.button("Edit grip", on_click=go, args=(2,), width="stretch")
@@ -374,54 +581,25 @@ def step_results():
         return
 
     recs = core.grip_fits(recs, P["w_len"] * 10, P["w_wid"] * 10)
-    top = list(recs.head(3).iterrows())
-    st.markdown('<div class="mf-head"><span>TOP MATCHES</span><span>BEST FIT FIRST</span></div>',
-                unsafe_allow_html=True)
-    cards = "".join(card(r, rank, universal) for rank, (_, r) in enumerate(top, start=1))
-    st.markdown(f'<div class="mf-grid">{cards}</div>', unsafe_allow_html=True)
-    if (recs.head(3)["Price source"] == "estimate").any():
-        st.caption("Prices marked as estimates are guesses because the database has no price data. "
-                   "Add real prices in the sidebar, or run fetch_prices.py, for an accurate budget filter.")
+    target = core.targets(P["w_grip"], P["w_len"] * 10, P["w_wid"] * 10)
+    n_all = len(run_recommend(n=999, per_brand=999)[1])
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Mice that match", f"{n_all:,}")
+    m2.metric("Best match score", f"{recs['Score'].iloc[0]:.0f}%")
+    m3.metric("Median price of matches", f"${recs['Price'].median():.0f}")
 
-    bind("w_list")
-    st.toggle("Show full ranked list", key="w_list")
-    keep("w_list")
-    if S.w_list:
-        bind("w_rows")
-        st.slider("Rows", 3, 40, key="w_rows")
-        keep("w_rows")
-        table = recs.head(S.w_rows)[
-            ["Name", "Tier", "Editor", "Score", "Price", "Price source", "Length (mm)", "Width (mm)",
-             "Height (mm)", "Weight (grams)", "Shape", "Hump placement", "Sensor",
-             "Polling rate (Hz)", "Connectivity"]].copy()
-        table["Tier"] = table["Tier"].map(core.TIER_LABEL)
-        table["Editor"] = table["Editor"].map({True: "Yes", False: ""})
-        table.index = table.index + 1
-        st.dataframe(table, width="stretch", column_config={
-            "Score": st.column_config.NumberColumn("Match", format="%.0f"),
-            "Price": st.column_config.NumberColumn("Price (USD)", format="$%.0f"),
-            "Tier": "Brand tier", "Editor": "Editor's choice",
-        })
-        st.download_button("Download as CSV", table.to_csv().encode(), "mouse_matches.csv", "text/csv")
-
-    with st.expander("How the match score works"):
-        t = core.targets(P["w_grip"], P["w_len"] * 10, P["w_wid"] * 10)
-        cfg = tier_config()
-        st.markdown(
-            f"- **Fit (up to 70):** length, width, height, hump position and shape. Your target is about "
-            f"{t['length']:.0f} mm long and {t['width']:.0f} mm wide. Longer than ideal is penalized less "
-            f"than shorter. Poor fits are dropped. Top-tier brands and editor's choice mice get a small "
-            f"allowance on fit (only within 10 mm of the ideal length) because they are proven designs.\n"
-            f"- **Newer tech (up to {core.RECENCY_POINTS[P['w_recency']]}):** sensor generation and polling "
-            f"rate. Mice with PAW3335, PAW3370 or older sensors are not in the database at all; "
-            f"proprietary gaming sensors and PAW3311 are kept.\n"
-            f"- **Weight (up to {core.WEIGHT_POINTS[P['w_wpref']]}):** lighter scores higher if you prefer that.\n"
-            f"- **Brand tier:** " + ", ".join(f"{core.TIER_LABEL[k]} {v[1]:+d}" for k, v in cfg.items())
-            + f".\n- **Editor's choice:** +{P['p_editor']}.\n"
-            f"- **Budget:** a mouse is shown if its price is at most your budget plus its tier's stretch "
-            f"({', '.join(f'{core.TIER_LABEL[k]} ${v}' for k, v in core.budget_caps(P['w_budget'], cfg).items())}).\n"
-            f"- **Not sure of your grip:** a curated list of universal-shape mice for your hand size, "
-            f"ranked by their average score across palm, claw and fingertip. Budget only flags them.")
+    t_top, t_cmp, t_list, t_data, t_about = st.tabs(
+        ["Top matches", "Compare", "Full list", "Dataset", "About"])
+    with t_top:
+        tab_top(recs, universal)
+    with t_cmp:
+        tab_compare(recs, target, universal)
+    with t_list:
+        tab_list(recs)
+    with t_data:
+        tab_dataset(target)
+    with t_about:
+        tab_about(target)
 
 
 # ----------------------------------------------------------------------------

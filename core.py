@@ -9,7 +9,6 @@ Eligibility   = price <= budget * (1 + tier stretch). Mice with outdated sensors
 """
 from __future__ import annotations
 
-import base64
 import re
 import urllib.parse
 from functools import lru_cache
@@ -22,7 +21,7 @@ HERE = Path(__file__).parent
 DB_PATH = HERE / "mouse_db.csv"
 PRICES_PATH = HERE / "prices.csv"
 LINKS_PATH = HERE / "links.csv"          # optional: Name,MaxGaming_URL,Amazon_URL (exact product pages)
-IMAGES_DIR = HERE / "images"             # built by prepare_images.py
+DATA_SOURCE = "mouse_db.csv: specification database of gaming mice (dimensions, weight, shape, sensor, connectivity)"
 AMAZON_TAG = ""                          # your Amazon Associates tag, e.g. "yourtag-20" (optional)
 
 # ----------------------------------------------------------------------------
@@ -246,15 +245,22 @@ def estimate_price(row) -> float:
     return float(max(10, 5 * round(p / 5)))
 
 
+MISSING_COLS = ["Length (mm)", "Width (mm)", "Height (mm)", "Weight (grams)", "Polling rate (Hz)",
+                "Tracking speed (IPS)", "Sensor"]
+
+
 def load_db() -> pd.DataFrame:
     df = pd.read_csv(DB_PATH, sep=";")
+    raw_rows = len(df)
     for c in ["Length (mm)", "Width (mm)", "Height (mm)", "Weight (grams)",
               "Polling rate (Hz)", "Tracking speed (IPS)"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
+    missing = {c: int(df[c].isna().sum()) for c in MISSING_COLS if c in df.columns}   # before filling
     df["Weight (grams)"] = df["Weight (grams)"].fillna(df["Weight (grams)"].median())
     df["Polling rate (Hz)"] = df["Polling rate (Hz)"].fillna(1000)
     # drop non-mouse outliers (rings, trackballs, oversized devices)
     df = df[df["Length (mm)"].between(75, 140) & df["Width (mm)"].between(45, 80)].copy()
+    n_outliers = raw_rows - len(df)
     df["Brand"] = df["Brand"].replace(BRAND_FIX)
     df["Tier"] = [classify(b, n, c) for b, n, c in zip(df["Brand"], df["Name"], df["Connectivity"])]
     picks = {n.lower() for n in EDITORS_PICKS}
@@ -265,13 +271,17 @@ def load_db() -> pd.DataFrame:
                          & df["Sensor"].fillna("").astype(str).str.contains(sensor_re, regex=True))
     sensor = df["Sensor"].fillna("")
     outdated = sensor.str.match(OUTDATED_SENSOR) | sensor.isin(GENERIC_SENSORS) | (sensor == "")
+    n_before = len(df)
     df = df[~outdated | df["Editor"]].copy()
+    n_old = n_before - len(df)
     df["Modernity"] = (0.7 * df.apply(lambda r: sensor_score(r["Sensor"], r["Tracking speed (IPS)"]), axis=1)
                        + 0.3 * df["Polling rate (Hz)"].map(polling_score))
     df["Era"] = df["Modernity"].map(era_label)
     df["Price"] = df.apply(estimate_price, axis=1)
     df["Price source"] = "estimate"
-    return df.reset_index(drop=True)
+    df = df.reset_index(drop=True)
+    df.attrs["report"] = dict(raw=raw_rows, outliers=n_outliers, outdated=n_old, kept=len(df), missing=missing)
+    return df
 
 
 def read_prices(src) -> pd.DataFrame | None:
@@ -350,10 +360,12 @@ def score(df, grip, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Prefer ligh
     out["Brand pts"] = out["Tier"].map(lambda k: tier_cfg[k][1])
     out["Editor pts"] = np.where(out["Editor"], editor_pts, 0)
     out["Raw"] = out["Fit"] + out["Recency"] + out["Weight bonus"] + out["Brand pts"] + out["Editor pts"]
+    out["Budget adj"] = 0.0
     if budget:
         if budget <= VALUE_BUDGET_MAX:
-            out["Raw"] += VALUE_EDGE_PTS * out["Name"].str.contains(VALUE_PATTERN, flags=re.I, regex=True)
-        out["Raw"] -= OVER_BUDGET_PEN * ((out["Price"] - budget) / budget).clip(lower=0)
+            out["Budget adj"] += VALUE_EDGE_PTS * out["Name"].str.contains(VALUE_PATTERN, flags=re.I, regex=True)
+        out["Budget adj"] -= OVER_BUDGET_PEN * ((out["Price"] - budget) / budget).clip(lower=0)
+        out["Raw"] += out["Budget adj"]
     # Display score: share of the best possible total under the current settings, so a
     # perfect-fit editor's choice from a top brand reads 100 and the rest stay distinguishable.
     out["Score"] = (out["Raw"] / _best(tier_cfg, weight_pref, recency, editor_pts) * 100).clip(0, 100)
@@ -387,40 +399,6 @@ def cheapest_fit(scored):
     return None if pool.empty else pool.sort_values("Price").iloc[0]
 
 
-def reasons(row, grip, hand_len_mm, hand_wid_mm, tier_cfg) -> list[str]:
-    t = targets(grip, hand_len_mm, hand_wid_mm)
-    out = []
-    if row["Editor"]:
-        out.append("Editor's choice")
-    dl = row["Length (mm)"] - t["length"]
-    if abs(dl) <= 4:
-        out.append(f"Length ({row['Length (mm)']:.0f} mm) is right for your hand")
-    elif dl > 0:
-        out.append(f"Runs long for your hand (+{dl:.0f} mm)")
-    else:
-        out.append(f"Runs short for your hand ({dl:.0f} mm)")
-    dw = row["Width (mm)"] - t["width"]
-    if abs(dw) > 6:
-        out.append(f"{'Wider' if dw > 0 else 'Narrower'} than ideal ({dw:+.0f} mm)")
-    if row["Fit raw"] < MIN_FIT:
-        out.append("Borderline fit, included as a proven design")
-    if grip == "Not sure":
-        out.insert(1 if row["Editor"] else 0, "Universal shape that works for palm, claw and fingertip")
-    elif row["s_hump"] >= 0.9:
-        out.append(f"{row['Hump placement'].replace(' - ', ', ').lower()} hump suits {grip.lower()} grip")
-    tech = [str(row["Sensor"])] if isinstance(row["Sensor"], str) else []
-    if row["Polling rate (Hz)"] >= 4000:
-        tech.append(f"{row['Polling rate (Hz)'] / 1000:.0f}K polling")
-    if tech:
-        out.append(f"{row['Era']} tech: " + ", ".join(tech))
-    if row["Weight (grams)"] <= WEIGHT_CLASSES[1][0]:
-        out.append(f"{weight_class(row['Weight (grams)'])} at {row['Weight (grams)']:.0f} g")
-    pts = tier_cfg[row["Tier"]][1]
-    if pts:
-        out.append(f"{TIER_LABEL[row['Tier']]} brand tier ({pts:+d} pts)")
-    return out[:6]
-
-
 # ----------------------------------------------------------------------------
 # "NOT SURE OF MY GRIP"
 # ----------------------------------------------------------------------------
@@ -451,12 +429,8 @@ def universal_picks(pool, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Prefe
 
 
 # ----------------------------------------------------------------------------
-# CARD HELPERS (text, links, images)
+# CARD HELPERS (text, links)
 # ----------------------------------------------------------------------------
-def slugify(name: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-
-
 def split_name(name: str, brand: str):
     model = name[len(brand):].strip() if name.lower().startswith(brand.lower()) else name
     return brand, (model or name)
@@ -537,23 +511,3 @@ def retailer_links(name: str) -> dict:
         amazon=((az + (tag.replace("&", "?" if "?" not in az else "&", 1) if az and AMAZON_TAG and "tag=" not in az else ""))
                 if az else f"https://www.amazon.com/s?k={q}{tag}", bool(az)),
     )
-
-
-@lru_cache(maxsize=1)
-def _manifest():
-    p = IMAGES_DIR / "manifest.csv"
-    if not p.exists():
-        return {}
-    t = pd.read_csv(p).fillna("")
-    return {r["slug"]: (r["bg"], r["shared_from"]) for _, r in t.iterrows()}
-
-
-@lru_cache(maxsize=256)
-def image_data(name: str):
-    """(data URI, tile background hex or '') for a mouse, or None when there is no photo yet."""
-    slug = slugify(name)
-    p = IMAGES_DIR / f"{slug}.webp"
-    if not p.exists():
-        return None
-    bg, _ = _manifest().get(slug, ("", ""))
-    return "data:image/webp;base64," + base64.b64encode(p.read_bytes()).decode(), bg
