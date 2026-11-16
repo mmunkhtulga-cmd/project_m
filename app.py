@@ -159,7 +159,8 @@ def run_recommend(n=40, per_brand=None):
     if P["w_grip"] == "Not sure":
         recs = core.universal_picks(pool, L, W, tier_config(), P["w_wpref"], P["w_recency"], P["p_editor"])
         return recs, recs
-    sc = core.score(pool, P["w_grip"], L, W, tier_config(), P["w_wpref"], P["w_recency"], P["p_editor"])
+    sc = core.score(pool, P["w_grip"], L, W, tier_config(), P["w_wpref"], P["w_recency"], P["p_editor"],
+                   budget=P["w_budget"])
     recs = core.recommend(sc, P["w_budget"], tier_config(), per_brand or P["w_perbrand"], n)
     return sc, recs
 

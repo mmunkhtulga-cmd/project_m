@@ -71,7 +71,16 @@ EDITORS_PICKS = [
     "RAWM Leviathan V4", "MelGeek Horus",
 ]
 # Whole families of editor's choice mice (regex on the full name)
-EDITORS_PATTERNS = [r"^LAMZU Thorn", r"^LAMZU Atlantis Mini"]      # not the regular Atlantis
+EDITORS_PATTERNS = [r"^LAMZU Thorn", r"^LAMZU Atlantis Mini",      # not the regular Atlantis
+                    r"^Scyrox V(6|8)\b", r"^MCHOSE L7( Pro)?\b"]
+# Editor's choice by name AND sensor: (regex on name, regex on sensor). Recent ATK mice with PAW3950/3955.
+EDITORS_SENSOR_RULES = [(r"^ATK\b", r"3950|3955")]
+# Budget edge: these ATK mice get VALUE_EDGE_PTS extra points when the budget is <= VALUE_BUDGET_MAX.
+VALUE_PATTERN = r"^ATK (?:A9 Air|F1 V2 (?:Ultimate|Extreme)|Zero|Ghost|U2 V2|Z1 V2|X1 V2)"
+VALUE_EDGE_PTS = 4
+VALUE_BUDGET_MAX = 80
+# Over-budget penalty: points lost per 100% over budget (a mouse 10% over loses 4 points).
+OVER_BUDGET_PEN = 40
 EDITOR_POINTS = 10
 
 # "Not sure of my grip": universal-shape mice, by hand size (hand length: <17.5 small, <19.5 medium)
@@ -97,7 +106,7 @@ GENERIC_SENSORS = {"4G", "3G Laser", "8925", "8960", "A825", "S203", "S205", "S6
                    "BlueTrack", "Laser Engine", "MLT04", "Optical", "BC3332-A", "BC3332-S", "AIM-WL",
                    "AL530", "VB010411", "SDNS3988", "1855", "Advanced Optical Tracking", "AI", "F1", "Core"}
 # tier -> (budget stretch %, brand points)
-TIER_DEFAULTS = {"Top": (20, 8), "Mid": (10, 5), "Other": (0, 0), "Low-mid": (0, -4)}
+TIER_DEFAULTS = {"Top": (10, 8), "Mid": (5, 5), "Other": (0, 0), "Low-mid": (0, -4)}
 TIER_LABEL = {"Top": "Top", "Mid": "Mid / enthusiast", "Other": "Other", "Low-mid": "Low to mid"}
 
 # ----------------------------------------------------------------------------
@@ -110,10 +119,20 @@ GRIPS = {
         blurb="Your whole palm rests on the mouse and your fingers lie flat on the buttons.",
         best="Longer, taller mice with a rounded hump.",
     ),
-    "Claw": dict(
+    "Relaxed claw": dict(
+        len_r=0.65, wid_r=0.72, height=40.0, len_sig=(5.0, 7.0),
+        blurb="Fingers arched, but more of your palm rests on the mouse. Hump toward the middle.",
+        best="Medium mice with a mid-center hump.",
+    ),
+    "Aggressive claw": dict(
         len_r=0.64, wid_r=0.72, height=39.5, len_sig=(5.0, 6.5),
-        blurb="The back of your palm touches the mouse while your fingers arch over the buttons.",
-        best="Medium mice with the hump toward the back.",
+        blurb="Fingers strongly arched, palm touches only at the back of the mouse.",
+        best="Medium mice with a moderate to aggressive back hump.",
+    ),
+    "Pincer claw": dict(
+        len_r=0.62, wid_r=0.70, height=38.5, len_sig=(5.0, 6.0),
+        blurb="Between claw and fingertip: tight, high-arched fingers and very little palm contact.",
+        best="Shorter, lower mice with a moderate back hump.",
     ),
     "Fingertip": dict(
         len_r=0.60, wid_r=0.68, height=37.5, len_sig=(5.0, 6.0),
@@ -121,16 +140,23 @@ GRIPS = {
         best="Short, low, light mice.",
     ),
 }
+# Grip families: the three claw types count as one when averaging over "all grips".
+FAMILIES = {"Palm": ["Palm"], "Claw": ["Relaxed claw", "Aggressive claw", "Pincer claw"],
+            "Fingertip": ["Fingertip"]}
 HAND_PRESETS = {"Small": (17.0, 7.8), "Medium": (18.5, 8.5), "Large": (20.0, 9.3)}
 
 HUMP_SCORE = {
     "Palm":      {"Back - moderate": 1.0, "Center": 0.9, "Back - aggressive": 0.8, "Back - minimal": 0.7},
-    "Claw":      {"Back - aggressive": 1.0, "Back - moderate": 1.0, "Back - minimal": 0.8, "Center": 0.6},
+    "Relaxed claw":    {"Center": 1.0, "Back - minimal": 0.85, "Back - moderate": 0.75, "Back - aggressive": 0.5},
+    "Aggressive claw": {"Back - aggressive": 1.0, "Back - moderate": 1.0, "Back - minimal": 0.7, "Center": 0.45},
+    "Pincer claw":     {"Back - moderate": 1.0, "Back - minimal": 0.9, "Back - aggressive": 0.85, "Center": 0.6},
     "Fingertip": {"Back - minimal": 1.0, "Center": 0.9, "Back - moderate": 0.7, "Back - aggressive": 0.4},
 }
 SHAPE_SCORE = {
     "Palm":      {"Ergonomic": 1.0, "Hybrid": 0.9, "Symmetrical": 0.85},
-    "Claw":      {"Symmetrical": 1.0, "Hybrid": 0.9, "Ergonomic": 0.7},
+    "Relaxed claw":    {"Symmetrical": 1.0, "Hybrid": 0.9, "Ergonomic": 0.7},
+    "Aggressive claw": {"Symmetrical": 1.0, "Hybrid": 0.9, "Ergonomic": 0.7},
+    "Pincer claw":     {"Symmetrical": 1.0, "Hybrid": 0.9, "Ergonomic": 0.7},
     "Fingertip": {"Symmetrical": 1.0, "Hybrid": 0.8, "Ergonomic": 0.5},
 }
 
@@ -148,7 +174,8 @@ FORGIVE_WITHIN_MM = 10.0   # no allowance when the mouse is further than this fr
 
 def targets(grip: str, hand_len_mm: float, hand_wid_mm: float) -> dict:
     if grip == "Not sure":   # universal shapes: average over the three grips
-        ts = [targets(g, hand_len_mm, hand_wid_mm) for g in GRIPS]
+        ts = [{k: sum(targets(g, hand_len_mm, hand_wid_mm)[k] for g in m) / len(m)
+               for k in ("length", "width", "height")} for m in FAMILIES.values()]
         return {k: sum(t[k] for t in ts) / len(ts) for k in ("length", "width", "height")}
     g = GRIPS[grip]
     width = min(max(hand_wid_mm * g["wid_r"], WIDTH_RANGE[0]), WIDTH_RANGE[1])
@@ -233,6 +260,9 @@ def load_db() -> pd.DataFrame:
     picks = {n.lower() for n in EDITORS_PICKS}
     df["Editor"] = (df["Name"].str.lower().isin(picks)
                     | df["Name"].apply(lambda n: any(re.search(p, n, flags=re.I) for p in EDITORS_PATTERNS)))
+    for name_re, sensor_re in EDITORS_SENSOR_RULES:
+        df["Editor"] |= (df["Name"].str.contains(name_re, flags=re.I, regex=True, na=False)
+                         & df["Sensor"].fillna("").astype(str).str.contains(sensor_re, regex=True))
     sensor = df["Sensor"].fillna("")
     outdated = sensor.str.match(OUTDATED_SENSOR) | sensor.isin(GENERIC_SENSORS) | (sensor == "")
     df = df[~outdated | df["Editor"]].copy()
@@ -305,7 +335,7 @@ def _fit(df, grip, hand_len_mm, hand_wid_mm):
 
 
 def score(df, grip, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Prefer light", recency="Medium",
-          editor_pts=EDITOR_POINTS):
+          editor_pts=EDITOR_POINTS, budget=None):
     out = df.copy()
     fit_raw, d_len, s_len, s_wid, s_hump = _fit(out, grip, hand_len_mm, hand_wid_mm)
     out["s_len"], out["s_wid"], out["s_hump"] = s_len, s_wid, s_hump
@@ -320,6 +350,10 @@ def score(df, grip, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Prefer ligh
     out["Brand pts"] = out["Tier"].map(lambda k: tier_cfg[k][1])
     out["Editor pts"] = np.where(out["Editor"], editor_pts, 0)
     out["Raw"] = out["Fit"] + out["Recency"] + out["Weight bonus"] + out["Brand pts"] + out["Editor pts"]
+    if budget:
+        if budget <= VALUE_BUDGET_MAX:
+            out["Raw"] += VALUE_EDGE_PTS * out["Name"].str.contains(VALUE_PATTERN, flags=re.I, regex=True)
+        out["Raw"] -= OVER_BUDGET_PEN * ((out["Price"] - budget) / budget).clip(lower=0)
     # Display score: share of the best possible total under the current settings, so a
     # perfect-fit editor's choice from a top brand reads 100 and the rest stay distinguishable.
     out["Score"] = (out["Raw"] / _best(tier_cfg, weight_pref, recency, editor_pts) * 100).clip(0, 100)
@@ -399,16 +433,17 @@ def universal_picks(pool, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Prefe
     """Curated universal-shape mice for this hand size, ranked by their average score over all grips.
     Budget is not a hard filter here (the list is curated); the UI flags picks above budget."""
     names = UNIVERSAL[hand_bracket(hand_len_mm)]
-    fits = pd.concat([_fit(pool, g, hand_len_mm, hand_wid_mm)[0] for g in GRIPS], axis=1).mean(axis=1)
+    fits = pd.concat([pd.concat([_fit(pool, g, hand_len_mm, hand_wid_mm)[0] for g in m], axis=1).mean(axis=1)
+                      for m in FAMILIES.values()], axis=1).mean(axis=1)
     cand = pool[pool["Name"].isin(names) | ((pool["Shape"] == "Symmetrical") & (fits >= UNIVERSAL_MIN_FIT))]
     if cand.empty:
         return cand.assign(Raw=[], Score=[])
     raws, base = [], None
-    for g in GRIPS:
-        s = score(cand, g, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref, recency, editor_pts)
-        raws.append(s.set_index("Name")["Raw"])
-        if g == "Claw":
-            base = s
+    for members in FAMILIES.values():
+        fam = [score(cand, g, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref, recency, editor_pts) for g in members]
+        raws.append(pd.concat([f.set_index("Name")["Raw"] for f in fam], axis=1).mean(axis=1))
+        if members[0] == FAMILIES["Claw"][0]:
+            base = fam[0]
     out = base.copy()
     out["Raw"] = out["Name"].map(pd.concat(raws, axis=1).mean(axis=1))
     out["Score"] = (out["Raw"] / _best(tier_cfg, weight_pref, recency, editor_pts) * 100).clip(0, 100)
@@ -442,6 +477,9 @@ def suits(row) -> list[str]:
     ok = [g for g in GRIPS if row.get(f"fit_{g}", 0) >= GOOD_FIT]
     if not ok:
         ok = [max(GRIPS, key=lambda g: row.get(f"fit_{g}", 0))]
+    if all(g in ok for g in FAMILIES["Claw"]):
+        ok = [g for g in ok if g not in FAMILIES["Claw"]]
+        ok.insert(1 if "Palm" in ok else 0, "Claw")
     return ok
 
 
@@ -465,6 +503,8 @@ def why_chips(row, grip, hand_len_mm, conn_pref, budget) -> list[str]:
         chips.append(f"{grip} grip support")
     if row["Editor"]:
         chips.append("Editor's choice")
+    if budget <= VALUE_BUDGET_MAX and re.search(VALUE_PATTERN, row["Name"], flags=re.I):
+        chips.append("Budget value pick")
     if conn_pref != "Any" and row["Connectivity"] == conn_pref:
         chips.append(f"{conn_pref} preference")
     if row["Polling rate (Hz)"] >= 4000:
