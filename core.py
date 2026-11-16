@@ -81,9 +81,11 @@ VALUE_BUDGET_MAX = 80
 # Superseded models removed from the database (regex on name): the v1 OP1 and XM2 (their v2 stays).
 EXCLUDE_PATTERNS = [r"^Endgame Gear (?:OP1|XM2)\w* \d+k$"]
 # Grip focus: mice built for specific grips. (regex on name, grip families it is made for).
-# A matching grip gets +GRIP_FOCUS_PTS, any other grip gets -GRIP_FOCUS_PTS. Families: Palm, Claw, Fingertip.
+# A matching grip gets +GRIP_FOCUS_PTS, any other grip gets -GRIP_FOCUS_PTS. Entries are a family (Palm, Claw,
+# Fingertip) or one exact grip (e.g. "Aggressive claw"); "Claw" covers all three claw types.
 GRIP_FOCUS = [(r"^Endgame Gear OP1", ["Claw", "Fingertip"]),
-              (r"^Endgame Gear XM2", ["Claw", "Palm"])]
+              (r"^Endgame Gear XM2", ["Claw", "Palm"]),
+              (r"^LAMZU Atlantis Mini", ["Claw", "Aggressive claw"])]
 GRIP_FOCUS_PTS = 3
 # Over-budget penalty: points lost per 100% over budget (a mouse 10% over loses 4 points).
 OVER_BUDGET_PEN = 40
@@ -381,7 +383,7 @@ def score(df, grip, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Prefer ligh
     out["Raw"] = out["Fit"] + out["Recency"] + out["Weight bonus"] + out["Brand pts"] + out["Editor pts"]
     fam = grip_family(grip)
     out["Grip adj"] = out["Name"].map(grip_focus).map(
-        lambda f: 0.0 if f is None else (GRIP_FOCUS_PTS if fam in f else -GRIP_FOCUS_PTS)).astype(float)
+        lambda f: 0.0 if f is None else (GRIP_FOCUS_PTS if (fam in f or grip in f) else -GRIP_FOCUS_PTS)).astype(float)
     out["Raw"] += out["Grip adj"]
     out["Budget adj"] = 0.0
     if budget:
@@ -488,7 +490,7 @@ def describe(row, universal=False) -> str:
         return "Universal shape that works for palm, claw and fingertip."
     length = row["Length (mm)"]
     size = "Compact" if length < 114 else ("Mid-size" if length < 122 else "Full-size")
-    shape = " ergonomic" if row["Shape"] == "Ergonomic" else ""
+    shape = f" {row['Shape'].lower()}" if row["Shape"] in ("Symmetrical", "Hybrid", "Ergonomic") else ""
     grips = " / ".join(g.lower() for g in suits(row))
     return f"{size}{shape} {row['Connectivity'].lower()} mouse for {grips}."
 
