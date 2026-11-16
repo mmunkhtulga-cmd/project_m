@@ -78,6 +78,11 @@ EDITORS_SENSOR_RULES = [(r"^ATK\b", r"3950|3955")]
 VALUE_PATTERN = r"^ATK (?:A9 Air|F1 V2 (?:Ultimate|Extreme)|Zero|Ghost|U2 V2|Z1 V2|X1 V2)"
 VALUE_EDGE_PTS = 4
 VALUE_BUDGET_MAX = 80
+# Grip focus: mice built for specific grips. (regex on name, grip families it is made for).
+# A matching grip gets +GRIP_FOCUS_PTS, any other grip gets -GRIP_FOCUS_PTS. Families: Palm, Claw, Fingertip.
+GRIP_FOCUS = [(r"^Endgame Gear OP1", ["Claw", "Fingertip"]),
+              (r"^Endgame Gear XM2", ["Claw", "Palm"])]
+GRIP_FOCUS_PTS = 3
 # Over-budget penalty: points lost per 100% over budget (a mouse 10% over loses 4 points).
 OVER_BUDGET_PEN = 40
 EDITOR_POINTS = 10
@@ -344,6 +349,15 @@ def _fit(df, grip, hand_len_mm, hand_wid_mm):
     return fit_raw, d_len, s_len, s_wid, s_hump
 
 
+def grip_family(grip: str) -> str:
+    return next((f for f, members in FAMILIES.items() if grip in members), grip)
+
+
+def grip_focus(name: str):
+    """Grip families a mouse is built for, or None."""
+    return next((g for pattern, g in GRIP_FOCUS if re.search(pattern, name, flags=re.I)), None)
+
+
 def score(df, grip, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Prefer light", recency="Medium",
           editor_pts=EDITOR_POINTS, budget=None):
     out = df.copy()
@@ -360,6 +374,10 @@ def score(df, grip, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Prefer ligh
     out["Brand pts"] = out["Tier"].map(lambda k: tier_cfg[k][1])
     out["Editor pts"] = np.where(out["Editor"], editor_pts, 0)
     out["Raw"] = out["Fit"] + out["Recency"] + out["Weight bonus"] + out["Brand pts"] + out["Editor pts"]
+    fam = grip_family(grip)
+    out["Grip adj"] = out["Name"].map(grip_focus).map(
+        lambda f: 0.0 if f is None else (GRIP_FOCUS_PTS if fam in f else -GRIP_FOCUS_PTS)).astype(float)
+    out["Raw"] += out["Grip adj"]
     out["Budget adj"] = 0.0
     if budget:
         if budget <= VALUE_BUDGET_MAX:
@@ -448,6 +466,9 @@ GOOD_FIT = 49   # 70% of the 70 fit points counts as "suits this grip"
 
 
 def suits(row) -> list[str]:
+    focus = grip_focus(row["Name"])
+    if focus:
+        return list(focus)
     ok = [g for g in GRIPS if row.get(f"fit_{g}", 0) >= GOOD_FIT]
     if not ok:
         ok = [max(GRIPS, key=lambda g: row.get(f"fit_{g}", 0))]

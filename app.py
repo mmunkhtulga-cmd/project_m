@@ -81,7 +81,7 @@ if "P" not in S:
     S.P = dict(
         w_grip=None, w_len=18.5, w_wid=8.5, w_budget=70, w_hand="Right", w_conn="Any",
         w_shape="Any", w_maxw=100, w_wpref="Prefer light", w_recency="Medium",
-        w_perbrand=2, w_rows=15, p_editor=core.EDITOR_POINTS,
+        w_perbrand=2, w_list=False, w_rows=15, p_editor=core.EDITOR_POINTS,
         **{f"s_{t}": v[0] for t, v in core.TIER_DEFAULTS.items()},
         **{f"p_{t}": v[1] for t, v in core.TIER_DEFAULTS.items()},
     )
@@ -316,8 +316,8 @@ def card(r, rank, universal):
 CLASS_SCALE = alt.Scale(domain=["Ultralight", "Light", "Medium", "Heavy"],
                         range=["#DADFF7", "#A0C1D1", "#B5B2C2", "#5A7D7C"])
 PARTS = {"Fit": "Hand fit", "Recency": "Newer tech", "Weight bonus": "Weight", "Brand pts": "Brand",
-         "Editor pts": "Editor's choice", "Budget adj": "Budget edge / penalty"}
-PART_COLORS = ["#A0C1D1", "#DADFF7", "#B5B2C2", "#5A7D7C", "#E3C98B", "#D98C8C"]
+         "Editor pts": "Editor's choice", "Grip adj": "Grip focus", "Budget adj": "Budget edge / penalty"}
+PART_COLORS = ["#A0C1D1", "#DADFF7", "#B5B2C2", "#5A7D7C", "#E3C98B", "#8FB3A3", "#D98C8C"]
 
 
 def sidebar():
@@ -538,6 +538,8 @@ def tab_about(target):
         f"Longer than ideal is penalized less than shorter. Poor fits are dropped.\n"
         f"- **Claw grips:** relaxed claw prefers a mid-center hump, aggressive claw a moderate to aggressive "
         f"back hump, pincer claw a shorter mouse with a moderate back hump.\n"
+        f"- **Grip focus:** Endgame Gear OP1 is built for claw and fingertip, XM2 for claw and palm. They get "
+        f"+{core.GRIP_FOCUS_PTS} points for those grips and -{core.GRIP_FOCUS_PTS} for the others.\n"
         f"- **Newer tech (up to {core.RECENCY_POINTS[P['w_recency']]}):** sensor generation and polling rate.\n"
         f"- **Weight (up to {core.WEIGHT_POINTS[P['w_wpref']]}):** \"Prefer light\" rewards up to 65 g, "
         f"\"Ultralight\" only 50 g and below.\n"
@@ -588,18 +590,21 @@ def step_results():
     m2.metric("Best match score", f"{recs['Score'].iloc[0]:.0f}%")
     m3.metric("Median price of matches", f"${recs['Price'].median():.0f}")
 
-    t_top, t_cmp, t_list, t_data, t_about = st.tabs(
-        ["Top matches", "Compare", "Full list", "Dataset", "About"])
+    t_top, t_cmp, t_data, t_about = st.tabs(["Top matches", "Compare", "Dataset", "About"])
     with t_top:
         tab_top(recs, universal)
     with t_cmp:
         tab_compare(recs, target, universal)
-    with t_list:
-        tab_list(recs)
     with t_data:
         tab_dataset(target)
     with t_about:
         tab_about(target)
+
+    bind("w_list")
+    st.toggle("Show full ranked list", key="w_list")
+    keep("w_list")
+    if S.w_list:
+        tab_list(recs)
 
 
 # ----------------------------------------------------------------------------

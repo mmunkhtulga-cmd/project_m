@@ -27,9 +27,10 @@ Results are split into tabs:
 |---|---|
 | Top matches | The 3 best mice as cards: weight class, connection, grips it suits, why it matches, price, shop links |
 | Compare | Size map (your ideal vs each mouse), price vs match score, and a stacked bar of how each score is built |
-| Full list | Ranked table of up to 40 mice, downloadable as CSV |
 | Dataset | Source, cleaning steps with live row counts, missing-value table, weight and length charts |
 | About | Purpose, scoring rules, limits |
+
+Below the tabs, "Show full ranked list" opens a table of up to 40 mice, downloadable as CSV.
 
 The sidebar filters (budget, hand, connection, shape, max weight, weight preference, newer tech, results per
 brand, brand tier points) update every tab live.
@@ -72,6 +73,8 @@ The Dataset tab shows these counts live, so they always match the file.
 - Fit compares length, width, height, hump position and shape with the ideal for the grip (ratios of hand size).
   Relaxed claw prefers a mid-center hump, aggressive claw a moderate to aggressive back hump, pincer claw a
   shorter mouse with a moderate back hump.
+- Grip focus: Endgame Gear OP1 is claw/fingertip, XM2 is claw/palm (`GRIP_FOCUS` in `core.py`): +3 points for
+  those grips, -3 for the others.
 - Weight classes: ultralight 50 g and below, light 51 to 65 g, medium 66 to 80 g, heavy 81 g and up.
 - Budget: a mouse is shown if its price is within budget plus its tier's stretch (Top 10%, Mid 5%). Going over
   budget costs 40 points per 100% over. ATK A9 Air, F1 V2 Ultimate/Extreme, Zero, Ghost, U2 V2, Z1 V2 and X1 V2
