@@ -14,7 +14,7 @@ Live app: _add your Streamlit Cloud link here_
 ## Deploy on Streamlit Cloud
 
 1. Push this folder to a GitHub repo. It must include `mouse_db.csv`, `prices.csv`, `links.csv`,
-   `requirements.txt` and `.streamlit/config.toml` (the theme).
+   `requirements.txt`, the `images/` folder and `.streamlit/config.toml` (the theme).
 2. On share.streamlit.io choose New app, pick the repo, set the main file to `app.py`, and deploy.
 
 ## How the app works
@@ -51,17 +51,17 @@ the date you downloaded it. Columns the app uses:
 | Sensor, Tracking speed (IPS), Polling rate (Hz) | Modernity score and the old-sensor filter |
 | Material | Price estimate |
 
-Derived in `core.load_db()`: `Tier`, `Editor`, `Modernity`, `Era`, `Price`, `Price source`.
+Derived in `core.load_db()`: `Tier`, `Award`, `Modernity`, `Era`, `Price`, `Price source`.
 
 ### Cleaning and processing
 
 1. Measurements converted to numbers. Missing weight is filled with the median, missing polling rate with 1000 Hz.
 2. Rows outside 75 to 140 mm long or 45 to 80 mm wide are dropped (rings, trackballs, oversized devices).
 3. Mice with a PAW3335, PAW3370 or older PixArt sensor, or a generic or unlabelled sensor, are dropped
-   (1,533 rows in the original file, 1,174 used). Editor's choice mice are always kept.
+   (1,533 rows in the original file, 1,174 used). Mice with an award are always kept.
    The v1 Endgame Gear OP1 and XM2 are also dropped, since the v2 replaces them (`EXCLUDE_PATTERNS` in `core.py`).
 4. Split brand names are repaired (for example "Attack" + "Shark" -> "Attack Shark").
-5. Each mouse gets a brand tier, an editor's choice flag, and a modernity score inferred from sensor speed and
+5. Each mouse gets a brand tier, an award (editor's choice or highly recommended), and a modernity score inferred from sensor speed and
    polling rate (the data has no release year).
 6. Prices from `prices.csv` are marked verified; every other mouse gets a labelled estimate.
 
@@ -69,21 +69,25 @@ The Dataset tab shows these counts live, so they always match the file.
 
 ### Scoring
 
-`score = hand fit (0-70) + newer tech + weight bonus + brand points + editor's choice + budget edge/penalty`
+`score = hand fit (0-70) + newer tech + weight bonus + brand points + award + grip focus + budget edge/penalty`
 
 - Fit compares length, width, height, hump position and shape with the ideal for the grip (ratios of hand size).
   Relaxed claw prefers a mid-center hump, aggressive claw a moderate to aggressive back hump, pincer claw a
   shorter mouse with a moderate back hump.
 - Grip focus: Endgame Gear OP1 is claw/fingertip, XM2 is claw/palm, LAMZU Atlantis Mini is claw/aggressive
   claw (`GRIP_FOCUS` in `core.py`): +3 points for those grips, -3 for the others.
-- Weight classes: ultralight 50 g and below, light 51 to 65 g, medium 66 to 80 g, heavy 81 g and up.
+- Awards: "Editor's choice" (+10) is the list in `EDITOR_CHOICE_PATTERNS`. Mice from the older pick lists that are
+  not in it (VAXEE, Zowie EC/FK, Scyrox V6/V8, MCHOSE L7, other ZywOo editions, ATK with PAW3950/3955...) get
+  "Highly recommended" (+5, `HIGHLY_POINTS`).
+- Weight classes: ultralight 50 g and below, light 51 to 65 g, medium 66 to 80 g, heavy 81 g and up. Choosing
+  "Ultralight" or "Light" in the app is a strict filter: only mice in that class are shown.
 - Budget: a mouse is shown if its price is within budget plus its tier's stretch (Top 10%, Mid 5%). Going over
   budget costs 40 points per 100% over. ATK A9 Air, F1 V2 Ultimate/Extreme, Zero, Ghost, U2 V2, Z1 V2 and X1 V2
   get +4 when the budget is $80 or less.
 - "Not sure": curated universal mice plus any symmetrical mouse that fits palm, claw and fingertip well.
 
-Tune everything at the top of `core.py` (`TIER_BRANDS`, `EDITORS_PICKS`, `EDITORS_PATTERNS`,
-`EDITORS_SENSOR_RULES`, `VALUE_PATTERN`, `UNIVERSAL`, `GRIPS`, `WEIGHT_CLASSES`).
+Tune everything at the top of `core.py` (`TIER_BRANDS`, `EDITOR_CHOICE_PATTERNS`, `HIGHLY_PICKS`,
+`HIGHLY_PATTERNS`, `HIGHLY_SENSOR_RULES`, `MOUSE_IMAGES`, `VALUE_PATTERN`, `UNIVERSAL`, `GRIPS`, `WEIGHT_CLASSES`).
 
 ## Files
 
@@ -93,6 +97,8 @@ Tune everything at the top of `core.py` (`TIER_BRANDS`, `EDITORS_PICKS`, `EDITOR
 | `core.py` | Data loading and cleaning, tiers, scoring, universal picks, links |
 | `prices.csv` | `Name,Price_USD,Source,Updated`. Seeded from MaxGaming (US), checked 2026-11-15; "(sale)" prices will change |
 | `links.csv` | `Name,MaxGaming_URL,Amazon_URL`. Exact product pages; without one the button searches instead |
+| `images/mice/` | 128 px mouse icons shown on the cards. `MOUSE_IMAGES` in `core.py` maps name patterns to files; a mouse without a match just has no icon |
+| `images/ui/` | `hand_measure.webp` (step 1 guide) and `grip_visual.webp` (step 2 guide) |
 | `fetch_prices.py` | Optional: builds `prices.csv` from Shopify store feeds or Google Shopping (SerpAPI) |
 | `.streamlit/config.toml` | Theme (palette, square corners) |
 

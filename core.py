@@ -9,6 +9,7 @@ Eligibility   = price <= budget * (1 + tier stretch). Mice with outdated sensors
 """
 from __future__ import annotations
 
+import base64
 import re
 import urllib.parse
 from functools import lru_cache
@@ -57,7 +58,28 @@ NAME_RULES = [
 ]
 # Editor's choice mice (exact names as they appear in the database). They get bonus points
 # and are never hidden as "Dated". Add new names here as the database grows.
-EDITORS_PICKS = [
+# Awards. "Editor's choice" is this list of name patterns (regex, case-insensitive). Any mouse that matched an
+# older pick list below but is not in here gets "Highly recommended", with fewer points (HIGHLY_POINTS).
+EDITOR_CHOICE_PATTERNS = [
+    r"^LAMZU Maya",                                   # Maya and Maya X
+    r"^LAMZU Thorn",                                  # Thorn v1 and v2
+    r"^Hitscan Hyperlight",
+    r"^Razer Viper V[34] Pro",
+    r"^Logitech\b.*Superlight (?:2|3)", r"^Logitech\b.*Superstrike",
+    r"DRAKO.*KO[ -]?ONE",                             # CRDRAKO KO ONE
+    r"^MelGeek Horus",
+    r"Harpe Ace (?:Mini|2)\b", r"Keris (?:2|II)\b",
+    r"DeathAdder V[34]\b",                            # V3 wired / Pro / HyperSpeed, V4 Pro
+    r"^Endgame Gear (?:OP1|XM2)\w* (?:4|8)k v2\b",
+    r"^ATK A9 Air\+?",
+    r"^ATK F1 V[23]\b(?!.*Ultra ?Max 2\.0)",          # not the Ultra Max 2.0
+    r"^Ninjuts[ou] Sora V2",
+    r"Leviathan V4",
+    r"^Pulsar\b.*Crazylight",
+    r"^Pulsar\b.*ZywOo.*(?:Gen ?[12]\b|Chosen)",
+    r"^Pulsar\b.*TenZ",
+]
+HIGHLY_PICKS = [
     "Hitscan Hyperlight",
     "Logitech G Pro X Superlight", "Logitech G Pro X Superlight 2", "Logitech G Pro X2 Superstrike",
     "Razer DeathAdder V3 HyperSpeed", "Razer DeathAdder V3", "Razer DeathAdder V4 Pro",
@@ -69,14 +91,14 @@ EDITORS_PICKS = [
     "ATK A9 Air", "ATK A9 Air+", "ATK Phantom",
     "RAWM Leviathan V4", "MelGeek Horus",
 ]
-# Whole families of editor's choice mice (regex on the full name)
-EDITORS_PATTERNS = [r"^LAMZU Thorn", r"^LAMZU Atlantis Mini",      # not the regular Atlantis
+# Whole families of highly recommended mice (regex on the full name)
+HIGHLY_PATTERNS = [r"^LAMZU Thorn", r"^LAMZU Atlantis Mini",      # not the regular Atlantis
                     r"^Scyrox V(6|8)\b", r"^MCHOSE L7( Pro)?\b",
                     r"^VAXEE\b",                                       # every VAXEE mouse
                     r"^Pulsar\b.*(ZywOo|Crazylight)",                   # Pulsar ZywOo and Crazylight series
                     r"^Zowie (EC|FK)\d"]                               # Zowie EC and FK series
-# Editor's choice by name AND sensor: (regex on name, regex on sensor). Recent ATK mice with PAW3950/3955.
-EDITORS_SENSOR_RULES = [(r"^ATK\b", r"3950|3955")]
+# Highly recommended by name AND sensor: (regex on name, regex on sensor). Recent ATK mice with PAW3950/3955.
+HIGHLY_SENSOR_RULES = [(r"^ATK\b", r"3950|3955")]
 # Budget edge: these ATK mice get VALUE_EDGE_PTS extra points when the budget is <= VALUE_BUDGET_MAX.
 VALUE_PATTERN = r"^ATK (?:A9 Air|F1 V2 (?:Ultimate|Extreme)|Zero|Ghost|U2 V2|Z1 V2|X1 V2)"
 VALUE_EDGE_PTS = 4
@@ -93,6 +115,7 @@ GRIP_FOCUS_PTS = 3
 # Over-budget penalty: points lost per 100% over budget (a mouse 10% over loses 4 points).
 OVER_BUDGET_PEN = 40
 EDITOR_POINTS = 10
+HIGHLY_POINTS = 5
 
 # "Not sure of my grip": universal-shape mice, by hand size (hand length: <17.5 small, <19.5 medium)
 _MEDIUM_UP = ["Logitech G Pro X Superlight", "Logitech G Pro X Superlight 2", "Razer Viper V3 Pro",
@@ -278,16 +301,19 @@ def load_db() -> pd.DataFrame:
     df = df[~gone].copy()
     df["Brand"] = df["Brand"].replace(BRAND_FIX)
     df["Tier"] = [classify(b, n, c) for b, n, c in zip(df["Brand"], df["Name"], df["Connectivity"])]
-    picks = {n.lower() for n in EDITORS_PICKS}
-    df["Editor"] = (df["Name"].str.lower().isin(picks)
-                    | df["Name"].apply(lambda n: any(re.search(p, n, flags=re.I) for p in EDITORS_PATTERNS)))
-    for name_re, sensor_re in EDITORS_SENSOR_RULES:
-        df["Editor"] |= (df["Name"].str.contains(name_re, flags=re.I, regex=True, na=False)
-                         & df["Sensor"].fillna("").astype(str).str.contains(sensor_re, regex=True))
+    picks = {n.lower() for n in HIGHLY_PICKS}
+    older = (df["Name"].str.lower().isin(picks)
+             | df["Name"].apply(lambda n: any(re.search(p, n, flags=re.I) for p in HIGHLY_PATTERNS)))
+    for name_re, sensor_re in HIGHLY_SENSOR_RULES:
+        older |= (df["Name"].str.contains(name_re, flags=re.I, regex=True, na=False)
+                  & df["Sensor"].fillna("").astype(str).str.contains(sensor_re, regex=True))
+    df["Editor"] = df["Name"].apply(lambda n: any(re.search(p, n, flags=re.I) for p in EDITOR_CHOICE_PATTERNS))
+    df["Highly"] = older & ~df["Editor"]
+    df["Award"] = np.where(df["Editor"], "Editor's choice", np.where(df["Highly"], "Highly recommended", ""))
     sensor = df["Sensor"].fillna("")
     outdated = sensor.str.match(OUTDATED_SENSOR) | sensor.isin(GENERIC_SENSORS) | (sensor == "")
     n_before = len(df)
-    df = df[~outdated | df["Editor"]].copy()
+    df = df[~outdated | (df["Award"] != "")].copy()
     n_old = n_before - len(df)
     df["Modernity"] = (0.7 * df.apply(lambda r: sensor_score(r["Sensor"], r["Tracking speed (IPS)"]), axis=1)
                        + 0.3 * df["Polling rate (Hz)"].map(polling_score))
@@ -334,16 +360,23 @@ def _gauss(delta, sigma):
 
 
 RECENCY_POINTS = {"Low": 10, "Medium": 20, "High": 30}
-WEIGHT_POINTS = {"Don't mind": 0, "Prefer light": 4, "Ultralight": 7}
+WEIGHT_POINTS = {"Don't mind": 0, "Light": 4, "Ultralight": 7}
 # Weight classes (grams). Ultralight <= 50, light 51-65, medium 66-80, heavy 81+.
 WEIGHT_CLASSES = [(50, "Ultralight"), (65, "Light"), (80, "Medium")]
 # Weight bonus ramp per preference: (full points up to, zero points from). "Prefer light" fully
 # rewards anything up to 65 g; "Ultralight" only rewards 50 g and below.
-WEIGHT_RAMP = {"Don't mind": (0, 1), "Prefer light": (65, 80), "Ultralight": (50, 65)}
+WEIGHT_RAMP = {"Don't mind": (0, 1), "Light": (65, 80), "Ultralight": (50, 65)}
 
 
 def weight_class(grams) -> str:
     return next((name for limit, name in WEIGHT_CLASSES if round(grams) <= limit), "Heavy")
+
+
+def weight_ok(df, pref: str):
+    """Strict weight filter: "Ultralight" keeps only mice up to 50 g, "Light" only 51 to 65 g."""
+    if pref not in ("Light", "Ultralight"):
+        return pd.Series(True, index=df.index)
+    return df["Weight (grams)"].map(weight_class) == pref
 
 
 def _fit(df, grip, hand_len_mm, hand_wid_mm):
@@ -368,8 +401,8 @@ def grip_focus(name: str):
     return next((g for pattern, g in GRIP_FOCUS if re.search(pattern, name, flags=re.I)), None)
 
 
-def score(df, grip, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Prefer light", recency="Medium",
-          editor_pts=EDITOR_POINTS, budget=None):
+def score(df, grip, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Don't mind", recency="Medium",
+          editor_pts=EDITOR_POINTS, budget=None, highly_pts=HIGHLY_POINTS):
     out = df.copy()
     fit_raw, d_len, s_len, s_wid, s_hump = _fit(out, grip, hand_len_mm, hand_wid_mm)
     out["s_len"], out["s_wid"], out["s_hump"] = s_len, s_wid, s_hump
@@ -382,7 +415,7 @@ def score(df, grip, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Prefer ligh
     full, zero = WEIGHT_RAMP[weight_pref]
     out["Weight bonus"] = WEIGHT_POINTS[weight_pref] * ((zero - out["Weight (grams)"]) / (zero - full)).clip(0, 1)
     out["Brand pts"] = out["Tier"].map(lambda k: tier_cfg[k][1])
-    out["Editor pts"] = np.where(out["Editor"], editor_pts, 0)
+    out["Editor pts"] = np.where(out["Editor"], editor_pts, np.where(out["Highly"], highly_pts, 0))
     out["Raw"] = out["Fit"] + out["Recency"] + out["Weight bonus"] + out["Brand pts"] + out["Editor pts"]
     fam = grip_family(grip)
     out["Grip adj"] = out["Name"].map(grip_focus).map(
@@ -434,8 +467,8 @@ def hand_bracket(hand_len_mm: float) -> str:
     return "Small" if hand_len_mm < BRACKET_LIMITS_MM[0] else ("Medium" if hand_len_mm < BRACKET_LIMITS_MM[1] else "Large")
 
 
-def universal_picks(pool, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Prefer light",
-                    recency="Medium", editor_pts=EDITOR_POINTS):
+def universal_picks(pool, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Don't mind",
+                    recency="Medium", editor_pts=EDITOR_POINTS, highly_pts=HIGHLY_POINTS):
     """Curated universal-shape mice for this hand size, ranked by their average score over all grips.
     Budget is not a hard filter here (the list is curated); the UI flags picks above budget."""
     names = UNIVERSAL[hand_bracket(hand_len_mm)]
@@ -446,7 +479,8 @@ def universal_picks(pool, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref="Prefe
         return cand.assign(Raw=[], Score=[])
     raws, base = [], None
     for members in FAMILIES.values():
-        fam = [score(cand, g, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref, recency, editor_pts) for g in members]
+        fam = [score(cand, g, hand_len_mm, hand_wid_mm, tier_cfg, weight_pref, recency, editor_pts,
+                    highly_pts=highly_pts) for g in members]
         raws.append(pd.concat([f.set_index("Name")["Raw"] for f in fam], axis=1).mean(axis=1))
         if members[0] == FAMILIES["Claw"][0]:
             base = fam[0]
@@ -508,6 +542,8 @@ def why_chips(row, grip, hand_len_mm, conn_pref, budget) -> list[str]:
         chips.append(f"{grip} grip support")
     if row["Editor"]:
         chips.append("Editor's choice")
+    elif row["Highly"]:
+        chips.append("Highly recommended")
     if budget <= VALUE_BUDGET_MAX and re.search(VALUE_PATTERN, row["Name"], flags=re.I):
         chips.append("Budget value pick")
     if conn_pref != "Any" and row["Connectivity"] == conn_pref:
@@ -542,3 +578,46 @@ def retailer_links(name: str) -> dict:
         amazon=((az + (tag.replace("&", "?" if "?" not in az else "&", 1) if az and AMAZON_TAG and "tag=" not in az else ""))
                 if az else f"https://www.amazon.com/s?k={q}{tag}", bool(az)),
     )
+
+
+# ----------------------------------------------------------------------------
+# MOUSE ICONS (images/mice/, 128 px squares). First matching pattern wins; no match = no icon.
+# ----------------------------------------------------------------------------
+IMAGES_DIR = HERE / "images"
+MOUSE_IMAGES = [
+    (r"^LAMZU Maya X", "LAMZU_MAYA_X.webp"), (r"^LAMZU Maya", "LAMZU_MAYA.webp"),
+    (r"^LAMZU Thorn.*(?:V2|2\b)", "LAMZU_THORN_V2.webp"), (r"^LAMZU Thorn", "LAMZU_THORN_V1.webp"),
+    (r"^Hitscan Hyperlight", "Hitscan_Hyperlight.webp"),
+    (r"^Razer Viper V[34] Pro", "Razer_Viper_V4_Pro.webp"),
+    (r"^Logitech\b.*Superlight 2c", "Logitech_G_Pro_X_Superlight_2c.webp"),
+    (r"^Logitech\b.*Superstrike", "Logitech_G_Pro_X_2_Superstrike.webp"),
+    (r"^Logitech\b.*Superlight", "Logitech_G_Pro_X_Superlight.webp"),
+    (r"DRAKO.*KO[ -]?ONE", "CRDRAKO_KO_ONE.webp"),
+    (r"^MelGeek Horus", "MELGEEK_HORUS.webp"),
+    (r"Harpe Ace 2\b", "HARPE_ACE_2.webp"),
+    (r"DeathAdder V4", "Razer_Deathadder_v4_Pro.webp"),
+    (r"DeathAdder V3 Hyperspeed", "Razer_Deathadder_v3_Hyperspeed.webp"),
+    (r"DeathAdder V3(?!\s*(?:Pro|Hyperspeed))", "RAZER_Deathadder_v3_Wired.webp"),
+    (r"^Endgame Gear OP1w", "ENDGAME_GEAR_OP1W4K.webp"), (r"^Endgame Gear OP1\b", "ENDGAME_GEAR_OP18K.webp"),
+    (r"^Endgame Gear XM2w", "ENDGAME_GEAR_XMW4K.webp"), (r"^Endgame Gear XM2\b", "ENDGAME_GEAR_XM28K.webp"),
+    (r"^ATK A9 Air", "ATK_A9_AIR.webp"), (r"^ATK F1 V[23]\b", "ATK_F1_V2_and_V3.webp"),
+    (r"^Ninjuts[ou] Sora V2", "Ninjutso_Sora_v2.webp"),
+    (r"Leviathan V4", "RAWM_LEVIATHAN_V4.webp"),
+    (r"^Pulsar\b.*TenZ", "PULSAR_TENZ_MOUSE.webp"),
+    (r"^Pulsar\b.*Crazylight", "PULSAR_X2_CRAZYLIGHT.webp"),
+    (r"^Pulsar\b.*ZywOo", "PULSAR_ZYWOO_GEN1ANDGEN2.webp"),
+]
+
+
+@lru_cache(maxsize=None)
+def _data_uri(path: str):
+    p = Path(path)
+    return "data:image/webp;base64," + base64.b64encode(p.read_bytes()).decode() if p.exists() else None
+
+
+def mouse_icon(name: str):
+    """Data URI of the mouse's icon, or None."""
+    for pattern, filename in MOUSE_IMAGES:
+        if re.search(pattern, name, flags=re.I):
+            return _data_uri(str(IMAGES_DIR / "mice" / filename))
+    return None
