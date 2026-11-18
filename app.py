@@ -479,9 +479,6 @@ def tab_top(recs, universal):
                 unsafe_allow_html=True)
     cards = "".join(card(r, rank, universal) for rank, (_, r) in enumerate(top, start=1))
     st.markdown(f'<div class="mf-grid">{cards}</div>', unsafe_allow_html=True)
-    if (recs.head(3)["Price source"] == "estimate").any():
-        st.caption("Prices marked as estimates are guesses because prices.csv has no entry for that mouse. "
-                   "Add it to prices.csv (or run fetch_prices.py) for an accurate budget filter.")
 
 
 def tab_compare(recs, target, universal):
